@@ -43,6 +43,4 @@ declare module '@/services/api' {
   export function createCollection(collection: Collection): Promise<Collection>;
   export function updateCollection(id: number, collection: Collection): Promise<Collection>;
   export function deleteCollection(id: number): Promise<void>;
-
-  export default any;
 } 

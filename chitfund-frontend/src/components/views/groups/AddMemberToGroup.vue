@@ -6,9 +6,12 @@
 import { ref, onMounted } from 'vue'
 import { getAvailableMembers, getGroupById, addMemberToGroup } from '../../services/groupService'
 
-const props = defineProps<{
-  groupId: number
-}>()
+const props = defineProps({
+  groupId: {
+    type: Number,
+    required: true
+  }
+})
 
 const emit = defineEmits(['close', 'member-added'])
 
@@ -28,7 +31,7 @@ async function loadMembers() {
     ])
     members.value = membersData
     groupDetails.value = groupData
-  } catch (err: any) {
+  } catch (err) {
     console.error('Error loading data:', err)
     error.value = 'Failed to load data. Please try again.'
   } finally {
@@ -54,7 +57,7 @@ async function handleSubmit() {
     await addMemberToGroup(props.groupId, Number(selectedMemberId.value))
     emit('member-added')
     emit('close')
-  } catch (err: any) {
+  } catch (err) {
     console.error('Error adding member to group:', err)
     error.value = err.response?.data?.message || 'Failed to add member to group. Please try again.'
   } finally {

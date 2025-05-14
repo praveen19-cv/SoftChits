@@ -5,59 +5,80 @@ const router = express.Router();
 
 // Get all members
 router.get('/', (req, res) => {
-  const members = db.prepare('SELECT * FROM members').all();
-  res.json(members);
+  try {
+    const members = db.prepare('SELECT * FROM members').all();
+    res.json(members);
+  } catch (error) {
+    console.error('Error fetching members:', error);
+    res.status(500).json({ error: 'Failed to fetch members' });
+  }
 });
 
 // Get member by ID
 router.get('/:id', (req, res) => {
-  const member = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
-  if (!member) {
-    return res.status(404).json({ error: 'Member not found' });
+  try {
+    const member = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
+    if (!member) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    res.json(member);
+  } catch (error) {
+    console.error('Error fetching member:', error);
+    res.status(500).json({ error: 'Failed to fetch member' });
   }
-  res.json(member);
 });
 
 // Create new member
 router.post('/', (req, res) => {
-  const { name, phone, address, email } = req.body;
-  
-  const result = db.prepare(`
-    INSERT INTO members (name, phone, address, email)
-    VALUES (?, ?, ?, ?)
-  `).run(name, phone, address, email);
+  try {
+    const { name, phone, address, email, status = 'active' } = req.body;
+    const result = db.prepare(`
+      INSERT INTO members (name, phone, address, email, status)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(name, phone, address, email, status);
 
-  const newMember = db.prepare('SELECT * FROM members WHERE id = ?').get(result.lastInsertRowid);
-  res.status(201).json(newMember);
+    const newMember = db.prepare('SELECT * FROM members WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json(newMember);
+  } catch (error) {
+    console.error('Error creating member:', error);
+    res.status(500).json({ error: 'Failed to create member' });
+  }
 });
 
 // Update member
 router.put('/:id', (req, res) => {
-  const { name, phone, address, email } = req.body;
-  
-  const result = db.prepare(`
-    UPDATE members 
-    SET name = ?, phone = ?, address = ?, email = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `).run(name, phone, address, email, req.params.id);
+  try {
+    const { name, phone, address, email, status } = req.body;
+    const result = db.prepare(`
+      UPDATE members 
+      SET name = ?, phone = ?, address = ?, email = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(name, phone, address, email, status, req.params.id);
 
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Member not found' });
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    const updatedMember = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
+    res.json(updatedMember);
+  } catch (error) {
+    console.error('Error updating member:', error);
+    res.status(500).json({ error: 'Failed to update member' });
   }
-
-  const updatedMember = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
-  res.json(updatedMember);
 });
 
 // Delete member
 router.delete('/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM members WHERE id = ?').run(req.params.id);
-  
-  if (result.changes === 0) {
-    return res.status(404).json({ error: 'Member not found' });
+  try {
+    const result = db.prepare('DELETE FROM members WHERE id = ?').run(req.params.id);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    res.status(204).send();
+  } catch (error) {
+    console.error('Error deleting member:', error);
+    res.status(500).json({ error: 'Failed to delete member' });
   }
-  
-  res.status(204).send();
 });
 
 export default router; 

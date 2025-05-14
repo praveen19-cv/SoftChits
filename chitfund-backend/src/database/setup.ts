@@ -11,55 +11,86 @@ if (!fs.existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'chitfund.db');
 const db = new Database(dbPath);
 
-export function setupDatabase() {
-  // Create tables if they don't exist
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS members (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      phone TEXT,
-      address TEXT,
-      email TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+// Initialize database tables
+export function initializeDatabase() {
+  try {
+    // Create members table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        email TEXT NOT NULL,
+        address TEXT NOT NULL,
+        status TEXT CHECK(status IN ('active', 'inactive')) DEFAULT 'active',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-    CREATE TABLE IF NOT EXISTS chit_groups (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      total_amount DECIMAL(10,2) NOT NULL,
-      member_count INTEGER NOT NULL,
-      start_date DATE NOT NULL,
-      end_date DATE NOT NULL,
-      status TEXT CHECK(status IN ('active', 'completed', 'cancelled')),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+    // Add status column if it doesn't exist
+    try {
+      db.exec(`ALTER TABLE members ADD COLUMN status TEXT CHECK(status IN ('active', 'inactive')) DEFAULT 'active'`);
+    } catch (error) {
+      // Column might already exist, ignore error
+      console.log('Status column might already exist');
+    }
 
-    CREATE TABLE IF NOT EXISTS collections (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      member_id INTEGER,
-      chit_group_id INTEGER,
-      amount DECIMAL(10,2) NOT NULL,
-      collection_date DATE NOT NULL,
-      collected_by INTEGER,
-      payment_mode TEXT CHECK(payment_mode IN ('cash', 'bank', 'upi')),
-      status TEXT CHECK(status IN ('pending', 'completed')),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (member_id) REFERENCES members(id),
-      FOREIGN KEY (chit_group_id) REFERENCES chit_groups(id)
-    );
+    // Update existing members to have 'active' status
+    db.exec(`UPDATE members SET status = 'active' WHERE status IS NULL`);
 
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      role TEXT CHECK(role IN ('admin', 'agent')),
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+    // Create groups table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        total_amount DECIMAL(10,2) NOT NULL,
+        member_count INTEGER DEFAULT 0,
+        start_date DATE NOT NULL,
+        end_date DATE NOT NULL,
+        status TEXT CHECK(status IN ('active', 'inactive', 'completed')) DEFAULT 'active',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-  console.log('Database setup completed');
+    // Create group_members table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS group_members (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        member_id INTEGER NOT NULL,
+        group_member_id TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
+        UNIQUE(group_id, member_id),
+        UNIQUE(group_id, group_member_id)
+      )
+    `);
+
+    // Create collections table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS collections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        member_id INTEGER NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        collection_date DATE NOT NULL,
+        status TEXT CHECK(status IN ('pending', 'paid')) DEFAULT 'pending',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE
+      )
+    `);
+
+    console.log('Database tables initialized successfully');
+  } catch (error) {
+    console.error('Error initializing database:', error);
+    throw error;
+  }
 }
 
 export { db }; 

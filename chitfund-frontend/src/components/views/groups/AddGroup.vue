@@ -2,10 +2,14 @@
 import { ref } from 'vue'
 import { createGroup } from '@/services/api'
 import { useRouter } from 'vue-router'
+import StandardNotification from '@/components/standards/StandardNotification.vue'
 
 const router = useRouter()
 const loading = ref(false)
 const error = ref('')
+const showNotification = ref(false)
+const notificationMessage = ref('')
+const notificationType = ref('success')
 
 const group = ref({
   name: '',
@@ -29,10 +33,18 @@ async function handleSubmit() {
     }
     
     await createGroup(groupData)
-    router.push('/groups')
+    notificationMessage.value = 'Group created successfully!'
+    notificationType.value = 'success'
+    showNotification.value = true
+    setTimeout(() => {
+      router.push('/groups')
+    }, 1500)
   } catch (err: any) {
     console.error('Error creating group:', err)
     error.value = err.response?.data?.message || 'Failed to create group. Please try again.'
+    notificationMessage.value = error.value
+    notificationType.value = 'error'
+    showNotification.value = true
   } finally {
     loading.value = false
   }
@@ -123,6 +135,14 @@ async function handleSubmit() {
         </button>
       </div>
     </form>
+
+    <StandardNotification
+      :message="notificationMessage"
+      :type="notificationType"
+      :show="showNotification"
+      :duration="3000"
+      @close="showNotification = false"
+    />
   </div>
 </template>
 

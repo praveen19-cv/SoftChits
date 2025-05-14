@@ -39,6 +39,11 @@ const routes: Array<RouteRecordRaw> = [
     component: () => import('../components/views/groups/EditGroup.vue')
   },
   {
+    path: '/groups/:id/members',
+    name: 'group-members',
+    component: () => import('../components/views/groups/GroupMembers.vue')
+  },
+  {
     path: '/collections',
     name: 'collections',
     component: () => import('../components/views/collections/CollectionList.vue')

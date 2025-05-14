@@ -17,6 +17,7 @@ interface Member {
   phone: string
   email: string
   address: string
+  status: string
 }
 
 async function loadMembers() {
@@ -86,6 +87,7 @@ onMounted(loadMembers)
           <th>Phone</th>
           <th>Email</th>
           <th>Address</th>
+          <th>Status</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -95,6 +97,14 @@ onMounted(loadMembers)
           <td>{{ member.phone }}</td>
           <td>{{ member.email }}</td>
           <td>{{ member.address }}</td>
+          <td>
+            <span :class="[
+              'status-badge',
+              member.status === 'active' ? 'status-active' : 'status-inactive'
+            ]">
+              {{ member.status }}
+            </span>
+          </td>
           <td class="actions">
             <button class="edit-button" @click="handleEdit(member)">
               Edit
@@ -214,5 +224,22 @@ h2 {
 
 .delete-button:hover {
   background-color: #c0392b;
+}
+
+.status-badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status-active {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.status-inactive {
+  background-color: #fee2e2;
+  color: #991b1b;
 }
 </style> 

@@ -87,4 +87,28 @@ export async function deleteCollection(id: number) {
   return response.data;
 }
 
+// Group Members API functions
+export async function getGroupMembers(groupId: number) {
+  const response = await api.get(`/groups/${groupId}/members`);
+  return response.data;
+}
+
+export async function addGroupMember(groupId: number, memberId: number, groupMemberId: string) {
+  const response = await api.post(`/groups/${groupId}/members`, {
+    memberId,
+    groupMemberId
+  });
+  return response.data;
+}
+
+export async function removeGroupMember(groupId: number, memberId: number) {
+  const response = await api.delete(`/groups/${groupId}/members/${memberId}`);
+  return response.data;
+}
+
+export async function updateGroupMembers(groupId: number, members: Array<{ id: number, groupMemberId: string }>) {
+  const response = await api.put(`/groups/${groupId}/members`, { members });
+  return response.data;
+}
+
 export default api; 

@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { getGroupById, updateGroup } from '../../../../services/api'
+import { getGroupById, updateGroup } from '@/services/api'
 import { useRouter, useRoute } from 'vue-router'
 
 const router = useRouter()
@@ -14,7 +14,8 @@ const group = ref({
   startDate: '',
   endDate: '',
   totalAmount: 0,
-  memberCount: 0
+  memberCount: 0,
+  status: 'active'
 })
 
 async function loadGroup() {
@@ -41,7 +42,7 @@ async function handleSubmit() {
     router.push('/groups')
   } catch (err: any) {
     console.error('Error updating group:', err)
-    error.value = 'Failed to update group. Please try again.'
+    error.value = err.response?.data?.message || 'Failed to update group. Please try again.'
   } finally {
     loading.value = false
   }
@@ -126,6 +127,19 @@ onMounted(loadGroup)
         >
       </div>
 
+      <div class="form-group">
+        <label for="status">Status</label>
+        <select
+          id="status"
+          v-model="group.status"
+          required
+          class="form-select"
+        >
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+
       <div class="form-actions">
         <button type="submit" class="submit-button" :disabled="loading">
           {{ loading ? 'Saving...' : 'Save Changes' }}
@@ -172,7 +186,7 @@ label {
   font-weight: 500;
 }
 
-input, textarea {
+input, textarea, select {
   width: 100%;
   padding: 0.75rem;
   border: 1px solid #ddd;
@@ -180,7 +194,7 @@ input, textarea {
   font-size: 1rem;
 }
 
-input:focus, textarea:focus {
+input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: #2c3e50;
 }

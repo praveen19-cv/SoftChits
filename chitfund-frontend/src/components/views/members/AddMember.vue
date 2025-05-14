@@ -11,7 +11,8 @@ const member = ref({
   name: '',
   phone: '',
   email: '',
-  address: ''
+  address: '',
+  status: 'active' as 'active' | 'inactive'
 })
 
 async function handleSubmit() {
@@ -84,6 +85,14 @@ async function handleSubmit() {
         ></textarea>
       </div>
 
+      <div class="form-group">
+        <label for="status">Status</label>
+        <select id="status" v-model="member.status" required>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+
       <div class="form-actions">
         <button type="submit" class="submit-button" :disabled="loading">
           {{ loading ? 'Creating...' : 'Create Member' }}
@@ -130,7 +139,7 @@ label {
   font-weight: 500;
 }
 
-input, textarea {
+input, textarea, select {
   width: 100%;
   padding: 0.75rem;
   border: 1px solid #ddd;
@@ -138,7 +147,7 @@ input, textarea {
   font-size: 1rem;
 }
 
-input:focus, textarea:focus {
+input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: #3498db;
 }
@@ -187,5 +196,13 @@ input:focus, textarea:focus {
 button:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+select {
+  background-color: white;
+}
+
+select:focus {
+  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
 }
 </style> 

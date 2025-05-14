@@ -105,6 +105,9 @@ onMounted(loadGroups)
           <router-link :to="`/groups/edit/${group.id}`" class="edit-button">
             Edit
           </router-link>
+          <router-link :to="`/groups/${group.id}/members`" class="members-button">
+            Add/Edit Members
+          </router-link>
           <button class="delete-button" @click="handleDeleteClick(group)">
             Delete
           </button>
@@ -216,11 +219,12 @@ h2 {
 
 .group-actions {
   display: flex;
-  gap: 1rem;
+  gap: 0.5rem;
   margin-top: 1.5rem;
+  flex-wrap: wrap;
 }
 
-.edit-button, .delete-button {
+.edit-button, .delete-button, .members-button {
   padding: 0.5rem 1rem;
   border: none;
   border-radius: 4px;
@@ -237,6 +241,15 @@ h2 {
 
 .edit-button:hover {
   background-color: #2980b9;
+}
+
+.members-button {
+  background-color: #2ecc71;
+  color: white;
+}
+
+.members-button:hover {
+  background-color: #27ae60;
 }
 
 .delete-button {

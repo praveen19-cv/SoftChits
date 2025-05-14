@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { getAllMembers, getGroupById, getGroupMembers, updateGroupMembers } from '@/services/api'
 import { useRouter, useRoute } from 'vue-router'
+import StandardNotification from '@/components/standards/StandardNotification.vue'
 
 interface Member {
   id: number
@@ -33,6 +34,9 @@ const loading = ref(false)
 const error = ref('')
 const searchQuery = ref('')
 const statusFilter = ref<'all' | 'active' | 'inactive'>('active')
+const showNotification = ref(false)
+const notificationMessage = ref('')
+const notificationType = ref('success')
 
 // Sort selected members by their group member ID number
 const sortedSelectedMembers = computed(() => {
@@ -63,6 +67,14 @@ const filteredMembers = computed(() => {
   }
 
   return filtered
+})
+
+// Add computed property for member limit status
+const memberLimitStatus = computed(() => {
+  if (!group.value) return { isAtLimit: false, isExceeded: false }
+  const isAtLimit = selectedMembers.value.length === group.value.member_count
+  const isExceeded = selectedMembers.value.length > group.value.member_count
+  return { isAtLimit, isExceeded }
 })
 
 async function loadData() {
@@ -101,7 +113,17 @@ function generateGroupMemberId(member: Member, index: number) {
 
 async function toggleMember(member: Member) {
   const index = selectedMembers.value.findIndex(m => m.id === member.id)
+  
+  // If trying to add a new member
   if (index === -1) {
+    // Check if adding would exceed the limit
+    if (!group.value || selectedMembers.value.length >= group.value.member_count) {
+      notificationMessage.value = `Cannot add more members. Group limit is ${group.value?.member_count || 0} members.`
+      notificationType.value = 'error'
+      showNotification.value = true
+      return
+    }
+    
     // Add member with generated ID
     const newMember = {
       ...member,
@@ -126,9 +148,15 @@ async function toggleMember(member: Member) {
       id: m.id,
       groupMemberId: m.group_member_id || ''
     })))
+    notificationMessage.value = 'Group members updated successfully!'
+    notificationType.value = 'success'
+    showNotification.value = true
   } catch (err: any) {
     console.error('Error updating group members:', err)
     error.value = 'Failed to update group members. Please try again.'
+    notificationMessage.value = error.value
+    notificationType.value = 'error'
+    showNotification.value = true
     // Reload data to ensure consistency
     await loadData()
   }
@@ -164,7 +192,12 @@ onMounted(loadData)
 
     <div v-else class="members-container">
       <div class="selected-members">
-        <h3>Selected Members ({{ selectedMembers.length }})</h3>
+        <h3>
+          Selected Members 
+          <span :class="['member-count', { 'at-limit': memberLimitStatus.isAtLimit, 'exceeded': memberLimitStatus.isExceeded }]">
+            ({{ selectedMembers.length }}/{{ group?.member_count }})
+          </span>
+        </h3>
         <div v-if="selectedMembers.length === 0" class="empty-message">
           No members selected
         </div>
@@ -222,6 +255,14 @@ onMounted(loadData)
         </div>
       </div>
     </div>
+
+    <StandardNotification
+      :message="notificationMessage"
+      :type="notificationType"
+      :show="showNotification"
+      :duration="3000"
+      @close="showNotification = false"
+    />
   </div>
 </template>
 
@@ -465,6 +506,20 @@ onMounted(loadData)
 .selected-member .member-status {
   margin-left: auto;
   margin-right: 1rem;
+}
+
+.member-count {
+  font-size: 0.9em;
+  font-weight: normal;
+  color: #6b7280;
+}
+
+.member-count.at-limit {
+  color: #f59e0b; /* Amber */
+}
+
+.member-count.exceeded {
+  color: #ef4444; /* Red */
 }
 
 @media (max-width: 768px) {

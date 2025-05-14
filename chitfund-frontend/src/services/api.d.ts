@@ -4,25 +4,31 @@ interface Member {
   phone: string;
   email: string;
   address: string;
+  status: 'active' | 'inactive';
 }
 
 interface Group {
   id?: number;
   name: string;
-  description: string;
-  startDate: string;
-  endDate: string;
-  totalAmount: number;
-  memberCount: number;
+  total_amount: number;
+  member_count: number;
+  start_date: string;
+  end_date: string;
+  status: string;
 }
 
 interface Collection {
   id?: number;
-  groupId: number;
-  memberId: number;
+  group_id: number;
+  member_id: number;
   amount: number;
-  date: string;
+  collection_date: string;
   status: string;
+}
+
+interface GroupMember {
+  id: number;
+  group_member_id: string;
 }
 
 declare module '@/services/api' {
@@ -43,4 +49,9 @@ declare module '@/services/api' {
   export function createCollection(collection: Collection): Promise<Collection>;
   export function updateCollection(id: number, collection: Collection): Promise<Collection>;
   export function deleteCollection(id: number): Promise<void>;
+
+  export function getGroupMembers(groupId: number): Promise<Member[]>;
+  export function addGroupMember(groupId: number, memberId: number, groupMemberId: string): Promise<Member>;
+  export function removeGroupMember(groupId: number, memberId: number): Promise<void>;
+  export function updateGroupMembers(groupId: number, members: GroupMember[]): Promise<void>;
 } 

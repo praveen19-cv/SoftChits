@@ -2,19 +2,22 @@
 import { ref, onMounted } from 'vue'
 import { getGroupById, updateGroup } from '@/services/api'
 import { useRouter, useRoute } from 'vue-router'
+import StandardNotification from '@/components/standards/StandardNotification.vue'
 
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
 const error = ref('')
+const showNotification = ref(false)
+const notificationMessage = ref('')
+const notificationType = ref('success')
 
 const group = ref({
   name: '',
-  description: '',
-  startDate: '',
-  endDate: '',
-  totalAmount: 0,
-  memberCount: 0,
+  start_date: '',
+  end_date: '',
+  total_amount: 0,
+  member_count: 0,
   status: 'active'
 })
 
@@ -24,7 +27,14 @@ async function loadGroup() {
     error.value = ''
     const groupId = Number(route.params.id)
     const data = await getGroupById(groupId)
-    group.value = data
+    group.value = {
+      name: data.name,
+      start_date: data.start_date,
+      end_date: data.end_date,
+      total_amount: data.total_amount,
+      member_count: data.member_count,
+      status: data.status
+    }
   } catch (err: any) {
     console.error('Error loading group:', err)
     error.value = 'Failed to load group details. Please try again.'
@@ -39,10 +49,18 @@ async function handleSubmit() {
     error.value = ''
     const groupId = Number(route.params.id)
     await updateGroup(groupId, group.value)
-    router.push('/groups')
+    notificationMessage.value = 'Group updated successfully!'
+    notificationType.value = 'success'
+    showNotification.value = true
+    setTimeout(() => {
+      router.push('/groups')
+    }, 1500)
   } catch (err: any) {
     console.error('Error updating group:', err)
     error.value = err.response?.data?.message || 'Failed to update group. Please try again.'
+    notificationMessage.value = error.value
+    notificationType.value = 'error'
+    showNotification.value = true
   } finally {
     loading.value = false
   }
@@ -74,22 +92,11 @@ onMounted(loadGroup)
       </div>
 
       <div class="form-group">
-        <label for="description">Description</label>
-        <textarea 
-          id="description" 
-          v-model="group.description" 
-          required
-          placeholder="Enter group description"
-          rows="3"
-        ></textarea>
-      </div>
-
-      <div class="form-group">
         <label for="startDate">Start Date</label>
         <input 
           type="date" 
           id="startDate" 
-          v-model="group.startDate" 
+          v-model="group.start_date" 
           required
         >
       </div>
@@ -99,7 +106,7 @@ onMounted(loadGroup)
         <input 
           type="date" 
           id="endDate" 
-          v-model="group.endDate" 
+          v-model="group.end_date" 
           required
         >
       </div>
@@ -109,7 +116,7 @@ onMounted(loadGroup)
         <input 
           type="number" 
           id="totalAmount" 
-          v-model="group.totalAmount" 
+          v-model="group.total_amount" 
           required
           min="0"
           step="0.01"
@@ -121,7 +128,7 @@ onMounted(loadGroup)
         <input 
           type="number" 
           id="memberCount" 
-          v-model="group.memberCount" 
+          v-model="group.member_count" 
           required
           min="1"
         >
@@ -149,6 +156,14 @@ onMounted(loadGroup)
         </button>
       </div>
     </form>
+
+    <StandardNotification
+      :message="notificationMessage"
+      :type="notificationType"
+      :show="showNotification"
+      :duration="3000"
+      @close="showNotification = false"
+    />
   </div>
 </template>
 

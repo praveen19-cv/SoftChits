@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { getAllGroups, deleteGroup } from '@/services/api'
 import PromptDialog from '@/components/standards/PromptDialog.vue'
+import StandardNotification from '@/components/standards/StandardNotification.vue'
 
 interface Group {
   id: number
@@ -20,6 +21,10 @@ const error = ref('')
 // Prompt dialog state
 const showDeletePrompt = ref(false)
 const groupToDelete = ref<Group | null>(null)
+
+const showNotification = ref(false)
+const notificationMessage = ref('')
+const notificationType = ref('success')
 
 async function loadGroups() {
   try {
@@ -49,9 +54,15 @@ async function handleDeleteConfirm() {
     await deleteGroup(groupToDelete.value.id)
     // Remove the deleted group from the list
     groups.value = groups.value.filter(g => g.id !== groupToDelete.value?.id)
+    notificationMessage.value = 'Group deleted successfully!'
+    notificationType.value = 'success'
+    showNotification.value = true
   } catch (err: any) {
     console.error('Error deleting group:', err)
     error.value = 'Failed to delete group. Please try again.'
+    notificationMessage.value = error.value
+    notificationType.value = 'error'
+    showNotification.value = true
   } finally {
     loading.value = false
     showDeletePrompt.value = false
@@ -124,6 +135,14 @@ onMounted(loadGroups)
       type="danger"
       @confirm="handleDeleteConfirm"
       @cancel="handleDeleteCancel"
+    />
+
+    <StandardNotification
+      :message="notificationMessage"
+      :type="notificationType"
+      :show="showNotification"
+      :duration="3000"
+      @close="showNotification = false"
     />
   </div>
 </template>

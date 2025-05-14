@@ -1,11 +1,13 @@
 <script lang="ts" setup>
 import { ref } from 'vue'
-import { createMember } from '@/services/api'
+import { useMembersStore } from '@/stores/MembersStore'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
 const loading = ref(false)
 const error = ref('')
+
+const membersStore = useMembersStore()
 
 const member = ref({
   name: '',
@@ -19,7 +21,8 @@ async function handleSubmit() {
   try {
     loading.value = true
     error.value = ''
-    await createMember(member.value)
+    const newMember = { ...member.value, id: Date.now() }
+    await membersStore.createMember(newMember)
     router.push('/members')
   } catch (err: any) {
     console.error('Error creating member:', err)

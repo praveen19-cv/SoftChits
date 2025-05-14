@@ -1,8 +1,8 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { getGroupById, updateGroup } from '@/services/api'
 import { useRouter, useRoute } from 'vue-router'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import { useGroupsStore } from '@/stores/GroupsStore'
 
 const router = useRouter()
 const route = useRoute()
@@ -12,7 +12,10 @@ const showNotification = ref(false)
 const notificationMessage = ref('')
 const notificationType = ref('success')
 
+const groupsStore = useGroupsStore()
+
 const group = ref({
+  id: 0,
   name: '',
   start_date: '',
   end_date: '',
@@ -26,15 +29,8 @@ async function loadGroup() {
     loading.value = true
     error.value = ''
     const groupId = Number(route.params.id)
-    const data = await getGroupById(groupId)
-    group.value = {
-      name: data.name,
-      start_date: data.start_date,
-      end_date: data.end_date,
-      total_amount: data.total_amount,
-      member_count: data.member_count,
-      status: data.status
-    }
+    const data = await groupsStore.getGroupById(groupId)
+    group.value = data
   } catch (err: any) {
     console.error('Error loading group:', err)
     error.value = 'Failed to load group details. Please try again.'
@@ -48,7 +44,7 @@ async function handleSubmit() {
     loading.value = true
     error.value = ''
     const groupId = Number(route.params.id)
-    await updateGroup(groupId, group.value)
+    await groupsStore.updateGroup(groupId, group.value)
     notificationMessage.value = 'Group updated successfully!'
     notificationType.value = 'success'
     showNotification.value = true

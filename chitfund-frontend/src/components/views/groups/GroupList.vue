@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { getAllGroups, deleteGroup } from '@/services/api'
+import { useGroupsStore } from '@/stores/GroupsStore'
 import PromptDialog from '@/components/standards/PromptDialog.vue'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
 
@@ -13,6 +13,8 @@ interface Group {
   end_date: string
   status: string
 }
+
+const groupsStore = useGroupsStore()
 
 const groups = ref<Group[]>([])
 const loading = ref(false)
@@ -30,8 +32,8 @@ async function loadGroups() {
   try {
     loading.value = true
     error.value = ''
-    const data = await getAllGroups()
-    groups.value = data
+    await groupsStore.fetchGroups()
+    groups.value = groupsStore.groups as Group[]
   } catch (err: any) {
     console.error('Error loading groups:', err)
     error.value = 'Failed to load groups. Please try again.'
@@ -51,8 +53,7 @@ async function handleDeleteConfirm() {
   try {
     loading.value = true
     error.value = ''
-    await deleteGroup(groupToDelete.value.id)
-    // Remove the deleted group from the list
+    await groupsStore.deleteGroup(groupToDelete.value.id)
     groups.value = groups.value.filter(g => g.id !== groupToDelete.value?.id)
     notificationMessage.value = 'Group deleted successfully!'
     notificationType.value = 'success'

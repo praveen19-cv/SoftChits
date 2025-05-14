@@ -1,9 +1,15 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { createCollection, getAllGroups, getAllMembers } from '@/services/api'
 import { useRouter } from 'vue-router'
+import { useCollectionsStore } from '@/stores/CollectionsStore'
+import { useGroupsStore } from '@/stores/GroupsStore'
+import { useMembersStore } from '@/stores/MembersStore'
 
 const router = useRouter()
+const collectionsStore = useCollectionsStore()
+const groupsStore = useGroupsStore()
+const membersStore = useMembersStore()
+
 const groups = ref([])
 const members = ref([])
 
@@ -15,40 +21,25 @@ const collection = ref({
   status: 'pending'
 })
 
-function loadGroups() {
-  getAllGroups()
-    .then(response => {
-      groups.value = response.data
-    })
-    .catch(error => {
-      console.error('Error loading groups:', error)
-    })
+async function loadGroupsAndMembers() {
+  await Promise.all([
+    groupsStore.fetchGroups(),
+    membersStore.fetchMembers()
+  ])
+  groups.value = groupsStore.groups
+  members.value = membersStore.members
 }
 
-function loadMembers() {
-  getAllMembers()
-    .then(response => {
-      members.value = response.data
-    })
-    .catch(error => {
-      console.error('Error loading members:', error)
-    })
+async function handleSubmit() {
+  try {
+    await collectionsStore.createCollection(collection.value)
+    router.push('/collections')
+  } catch (error) {
+    console.error('Error creating collection:', error)
+  }
 }
 
-function handleSubmit() {
-  createCollection(collection.value)
-    .then(() => {
-      router.push('/collections')
-    })
-    .catch(error => {
-      console.error('Error creating collection:', error)
-    })
-}
-
-onMounted(() => {
-  loadGroups()
-  loadMembers()
-})
+onMounted(loadGroupsAndMembers)
 </script>
 
 <template>

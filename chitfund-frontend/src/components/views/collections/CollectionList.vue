@@ -1,34 +1,38 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { getAllCollections, deleteCollection } from '@/services/api'
+import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
+const collectionsStore = useCollectionsStore()
+
 const collections = ref([])
 const loading = ref(false)
+const error = ref('')
 
-function loadCollections() {
-  loading.value = true
-  getAllCollections()
-    .then(response => {
-      collections.value = response.data
-    })
-    .catch(error => {
-      console.error('Error loading collections:', error)
-    })
-    .finally(() => {
-      loading.value = false
-    })
+async function loadCollections() {
+  try {
+    loading.value = true
+    error.value = ''
+    await collectionsStore.fetchCollections()
+    collections.value = collectionsStore.collections
+  } catch (err: any) {
+    error.value = 'Failed to load collections. Please try again.'
+  } finally {
+    loading.value = false
+  }
 }
 
-async function handleDelete(id: number) {
-  if (confirm('Are you sure you want to delete this collection?')) {
-    try {
-      await deleteCollection(id)
-      await loadCollections() // Reload the data after successful deletion
-    } catch (error) {
-      console.error('Error deleting collection:', error)
-    }
+async function handleDelete(collectionId) {
+  try {
+    loading.value = true
+    error.value = ''
+    await collectionsStore.deleteCollection(collectionId)
+    collections.value = collections.value.filter(c => c.id !== collectionId)
+  } catch (err: any) {
+    error.value = 'Failed to delete collection. Please try again.'
+  } finally {
+    loading.value = false
   }
 }
 

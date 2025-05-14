@@ -1,6 +1,8 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { getAllMembers, getAllGroups, getAllCollections } from '../../services/api'
+import { useMembersStore } from '@/stores/MembersStore'
+import { useGroupsStore } from '@/stores/GroupsStore'
+import { useCollectionsStore } from '@/stores/CollectionsStore'
 
 const stats = ref({
   totalMembers: 0,
@@ -8,18 +10,21 @@ const stats = ref({
   totalCollections: 0
 })
 
+const membersStore = useMembersStore()
+const groupsStore = useGroupsStore()
+const collectionsStore = useCollectionsStore()
+
 async function fetchStats() {
   try {
-    const [members, groups, collections] = await Promise.all([
-      getAllMembers(),
-      getAllGroups(),
-      getAllCollections()
+    await Promise.all([
+      membersStore.fetchMembers(),
+      groupsStore.fetchGroups(),
+      collectionsStore.fetchCollections()
     ])
-    
     stats.value = {
-      totalMembers: members.length,
-      totalGroups: groups.length,
-      totalCollections: collections.length
+      totalMembers: membersStore.members.length,
+      totalGroups: groupsStore.groups.length,
+      totalCollections: collectionsStore.collections.length
     }
   } catch (error) {
     console.error('Error fetching stats:', error)

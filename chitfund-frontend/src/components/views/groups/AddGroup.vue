@@ -1,8 +1,8 @@
 <script lang="ts" setup>
 import { ref } from 'vue'
-import { createGroup } from '@/services/api'
 import { useRouter } from 'vue-router'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import { useGroupsStore } from '@/stores/GroupsStore'
 
 const router = useRouter()
 const loading = ref(false)
@@ -10,6 +10,8 @@ const error = ref('')
 const showNotification = ref(false)
 const notificationMessage = ref('')
 const notificationType = ref('success')
+
+const groupsStore = useGroupsStore()
 
 const group = ref({
   name: '',
@@ -24,15 +26,7 @@ async function handleSubmit() {
   try {
     loading.value = true
     error.value = ''
-    
-    // Convert numeric fields
-    const groupData = {
-      ...group.value,
-      total_amount: Number(group.value.total_amount),
-      member_count: Number(group.value.member_count)
-    }
-    
-    await createGroup(groupData)
+    await groupsStore.createGroup(group.value)
     notificationMessage.value = 'Group created successfully!'
     notificationType.value = 'success'
     showNotification.value = true

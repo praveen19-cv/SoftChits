@@ -1,30 +1,23 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { getAllMembers, deleteMember } from '@/services/api'
 import { useRouter } from 'vue-router'
 import PromptDialog from '@/components/standards/PromptDialog.vue'
+import { useMembersStore, type Member } from '@/stores/MembersStore'
 
 const router = useRouter()
-const members = ref([])
+const membersStore = useMembersStore()
+const members = ref<Member[]>([])
 const loading = ref(false)
 const error = ref('')
 const showDeletePrompt = ref(false)
-const memberToDelete = ref(null)
-
-interface Member {
-  id: number
-  name: string
-  phone: string
-  email: string
-  address: string
-  status: string
-}
+const memberToDelete = ref<Member | null>(null)
 
 async function loadMembers() {
   try {
     loading.value = true
     error.value = ''
-    members.value = await getAllMembers()
+    const fetchedMembers = await membersStore.fetchMembers()
+    members.value = fetchedMembers
   } catch (err: any) {
     console.error('Error loading members:', err)
     error.value = 'Failed to load members. Please try again.'
@@ -48,8 +41,8 @@ async function confirmDelete() {
   try {
     loading.value = true
     error.value = ''
-    await deleteMember(memberToDelete.value.id)
-    members.value = members.value.filter(m => m.id !== memberToDelete.value.id)
+    await membersStore.deleteMember(memberToDelete.value.id)
+    members.value = members.value.filter(m => m.id !== memberToDelete.value?.id)
   } catch (err: any) {
     console.error('Error deleting member:', err)
     error.value = 'Failed to delete member. Please try again.'
@@ -60,7 +53,9 @@ async function confirmDelete() {
   }
 }
 
-onMounted(loadMembers)
+onMounted(async () => {
+  await loadMembers()
+})
 </script>
 
 <template>
@@ -118,9 +113,9 @@ onMounted(loadMembers)
     </table>
 
     <PromptDialog
-      v-if="showDeletePrompt"
+      v-if="showDeletePrompt && memberToDelete"
       :title="'Delete Member'"
-      :message="`Are you sure you want to delete ${memberToDelete?.name}?`"
+      :message="`Are you sure you want to delete ${memberToDelete.name}?`"
       @confirm="confirmDelete"
       @cancel="showDeletePrompt = false"
     />

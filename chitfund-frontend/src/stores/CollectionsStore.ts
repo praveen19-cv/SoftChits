@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { api } from '../services/api';
+import api from '../services/api';
 
 export interface Collection {
   id: number;
@@ -14,6 +14,11 @@ export const useCollectionsStore = defineStore('collections', () => {
   async function fetchCollections() {
     const response = await api.get('/collections');
     collections.value = response.data;
+  }
+
+  async function getCollectionById(id: number) {
+    const response = await api.get(`/collections/${id}`);
+    return response.data;
   }
 
   async function createCollection(collection: Collection) {
@@ -34,5 +39,5 @@ export const useCollectionsStore = defineStore('collections', () => {
     collections.value = collections.value.filter(c => c.id !== id);
   }
 
-  return { collections, fetchCollections, createCollection, updateCollection, deleteCollection };
+  return { collections, fetchCollections, getCollectionById, createCollection, updateCollection, deleteCollection };
 }); 

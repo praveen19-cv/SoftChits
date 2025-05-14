@@ -1,8 +1,9 @@
 <script lang="ts" setup>
 import { ref, onMounted, computed } from 'vue'
-import { getAllMembers, getGroupById, getGroupMembers, updateGroupMembers } from '@/services/api'
 import { useRouter, useRoute } from 'vue-router'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import { useGroupsStore } from '@/stores/GroupsStore'
+import { useMembersStore } from '@/stores/MembersStore'
 
 interface Member {
   id: number
@@ -26,6 +27,8 @@ interface Group {
 
 const router = useRouter()
 const route = useRoute()
+const groupsStore = useGroupsStore()
+const membersStore = useMembersStore()
 const groupId = computed(() => Number(route.params.id))
 const group = ref<Group | null>(null)
 const allMembers = ref<Member[]>([])
@@ -88,15 +91,15 @@ async function loadData() {
     error.value = ''
     
     // Load group details
-    const groupData = await getGroupById(groupId.value)
+    const groupData = await groupsStore.getGroupById(groupId.value)
     group.value = groupData
     
     // Load all members
-    const membersData = await getAllMembers()
-    allMembers.value = membersData
+    await membersStore.fetchMembers()
+    allMembers.value = membersStore.members as Member[]
     
     // Load existing group members
-    const groupMembersData = await getGroupMembers(groupId.value)
+    const groupMembersData = await groupsStore.getGroupMembers(Number(groupId.value))
     selectedMembers.value = groupMembersData
   } catch (err: any) {
     console.error('Error loading data:', err)
@@ -144,7 +147,7 @@ async function toggleMember(member: Member) {
     selectedMembers.value = updatedMembers
 
     // Then update the backend
-    await updateGroupMembers(groupId.value, updatedMembers.map(m => ({
+    await updateGroupMembers(updatedMembers.map(m => ({
       id: m.id,
       groupMemberId: m.group_member_id || ''
     })))
@@ -164,6 +167,19 @@ async function toggleMember(member: Member) {
 
 function isMemberSelected(member: Member) {
   return selectedMembers.value.some(m => m.id === member.id)
+}
+
+// Fetch group members on component mount
+onMounted(async () => {
+  const groupId = Number(route.params.id);
+  const members = await groupsStore.getGroupMembers(groupId);
+  // Update the members in the component
+});
+
+// Update group members function
+async function updateGroupMembers(members: Array<{ id: number, groupMemberId: string }>) {
+  const groupId = Number(route.params.id);
+  await groupsStore.updateGroupMembers(groupId, members);
 }
 
 onMounted(loadData)

@@ -1,12 +1,14 @@
 <script lang="ts" setup>
 import { ref, onMounted } from 'vue'
-import { getMemberById, updateMember } from '@/services/api'
 import { useRouter, useRoute } from 'vue-router'
+import { useMembersStore } from '@/stores/MembersStore'
 
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
 const error = ref('')
+
+const membersStore = useMembersStore()
 
 const member = ref({
   name: '',
@@ -21,7 +23,7 @@ async function loadMember() {
     loading.value = true
     error.value = ''
     const memberId = Number(route.params.id)
-    const data = await getMemberById(memberId)
+    const data = await membersStore.getMemberById(memberId)
     member.value = data
   } catch (err: any) {
     console.error('Error loading member:', err)
@@ -36,7 +38,7 @@ async function handleSubmit() {
     loading.value = true
     error.value = ''
     const memberId = Number(route.params.id)
-    await updateMember(memberId, member.value)
+    await membersStore.updateMember(memberId, member.value)
     router.push('/members')
   } catch (err: any) {
     console.error('Error updating member:', err)

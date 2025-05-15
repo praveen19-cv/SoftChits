@@ -1,8 +1,8 @@
 <script lang="ts" setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
-import { useGroupsStore } from '@/stores/GroupsStore'
+import { useGroupsStore, type CreateGroup } from '@/stores/GroupsStore'
 
 const router = useRouter()
 const loading = ref(false)
@@ -13,14 +13,36 @@ const notificationType = ref('success')
 
 const groupsStore = useGroupsStore()
 
-const group = ref({
+const group = ref<CreateGroup>({
   name: '',
-  total_amount: '',
-  member_count: 1, // Default to 1 member
+  total_amount: 0,
+  member_count: 1,
   start_date: '',
   end_date: '',
-  status: 'active'
+  status: 'active',
+  number_of_months: 0
 })
+
+// Function to calculate months between two dates
+function calculateMonths(startDate: string, endDate: string): number {
+  if (!startDate || !endDate) return 0
+  
+  const start = new Date(startDate)
+  const end = new Date(endDate)
+  
+  const months = (end.getFullYear() - start.getFullYear()) * 12 + 
+                (end.getMonth() - start.getMonth())
+  
+  return Math.max(0, months)
+}
+
+// Watch for changes in start_date and end_date
+watch(
+  [() => group.value.start_date, () => group.value.end_date],
+  ([newStartDate, newEndDate]) => {
+    group.value.number_of_months = calculateMonths(newStartDate, newEndDate)
+  }
+)
 
 async function handleSubmit() {
   try {
@@ -109,6 +131,18 @@ async function handleSubmit() {
           v-model="group.end_date"
           required
         />
+      </div>
+
+      <div class="form-group">
+        <label for="number_of_months">Number of Months</label>
+        <input
+          type="number"
+          id="number_of_months"
+          v-model="group.number_of_months"
+          readonly
+          class="readonly-input"
+        />
+        <small class="helper-text">Automatically calculated based on start and end dates</small>
       </div>
 
       <div class="form-group">
@@ -232,5 +266,17 @@ input:focus, select:focus {
 button:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+.readonly-input {
+  background-color: #f3f4f6;
+  cursor: not-allowed;
+}
+
+.helper-text {
+  display: block;
+  margin-top: 0.25rem;
+  color: #6b7280;
+  font-size: 0.875rem;
 }
 </style> 

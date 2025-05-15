@@ -33,11 +33,11 @@ router.get('/:id', (req, res) => {
 // Create new group
 router.post('/', (req, res) => {
   try {
-    const { name, total_amount, member_count, start_date, end_date, status } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, status, number_of_months } = req.body;
     const result = db.prepare(`
-      INSERT INTO groups (name, total_amount, member_count, start_date, end_date, status)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(name, total_amount, member_count, start_date, end_date, status);
+      INSERT INTO groups (name, total_amount, member_count, start_date, end_date, status, number_of_months)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months);
 
     const newGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json(newGroup);
@@ -50,12 +50,12 @@ router.post('/', (req, res) => {
 // Update group
 router.put('/:id', (req, res) => {
   try {
-    const { name, total_amount, member_count, start_date, end_date, status } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, status, number_of_months } = req.body;
     const result = db.prepare(`
       UPDATE groups 
-      SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+      SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, status = ?, number_of_months = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(name, total_amount, member_count, start_date, end_date, status, req.params.id);
+    `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months, req.params.id);
 
     if (result.changes === 0) {
       return res.status(404).json({ message: 'Group not found' });
@@ -180,6 +180,58 @@ router.put('/:id/members', (req, res) => {
   } catch (error) {
     console.error('Error updating group members:', error);
     res.status(500).json({ message: 'Failed to update group members' });
+  }
+});
+
+// Get chit dates for a group
+router.get('/:id/chit-dates', (req, res) => {
+  try {
+    const chitDates = db.prepare(`
+      SELECT * FROM chit_dates 
+      WHERE group_id = ? 
+      ORDER BY chit_date ASC
+    `).all(req.params.id);
+    res.json(chitDates);
+  } catch (error) {
+    console.error('Error fetching chit dates:', error);
+    res.status(500).json({ message: 'Failed to fetch chit dates' });
+  }
+});
+
+// Update chit dates for a group
+router.put('/:id/chit-dates', (req, res) => {
+  try {
+    const { chitDates } = req.body;
+    
+    // Start a transaction
+    db.prepare('BEGIN').run();
+
+    try {
+      // Delete existing chit dates for this group
+      db.prepare('DELETE FROM chit_dates WHERE group_id = ?').run(req.params.id);
+
+      // Insert new chit dates
+      const insertStmt = db.prepare(`
+        INSERT INTO chit_dates (group_id, chit_date, amount)
+        VALUES (?, ?, ?)
+      `);
+
+      for (const chitDate of chitDates) {
+        insertStmt.run(req.params.id, chitDate.chit_date, chitDate.amount);
+      }
+
+      // Commit the transaction
+      db.prepare('COMMIT').run();
+
+      res.json({ message: 'Chit dates updated successfully' });
+    } catch (error) {
+      // Rollback in case of error
+      db.prepare('ROLLBACK').run();
+      throw error;
+    }
+  } catch (error) {
+    console.error('Error updating chit dates:', error);
+    res.status(500).json({ message: 'Failed to update chit dates' });
   }
 });
 

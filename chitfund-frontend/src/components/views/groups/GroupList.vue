@@ -30,15 +30,34 @@ const notificationType = ref('success')
 
 async function loadGroups() {
   try {
-    loading.value = true
-    error.value = ''
-    await groupsStore.fetchGroups()
-    groups.value = groupsStore.groups as Group[]
+    loading.value = true;
+    error.value = '';
+    const fetchedGroups = await groupsStore.fetchGroups();
+    
+    // Ensure fetchedGroups is an array
+    if (!Array.isArray(fetchedGroups)) {
+      console.error('Invalid groups data received:', fetchedGroups);
+      error.value = 'Unable to connect to the server. Please check if the backend server is running.';
+      groups.value = [];
+      return;
+    }
+
+    // Set groups directly since store already filters invalid groups
+    groups.value = fetchedGroups;
+    
+    if (groups.value.length === 0) {
+      error.value = 'No groups found. Add your first group!';
+    }
   } catch (err: any) {
-    console.error('Error loading groups:', err)
-    error.value = 'Failed to load groups. Please try again.'
+    console.error('Error loading groups:', err);
+    if (err.message?.includes('Network Error')) {
+      error.value = 'Unable to connect to the server. Please check if the backend server is running.';
+    } else {
+      error.value = err.message || 'Failed to load groups. Please try again.';
+    }
+    groups.value = [];
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
@@ -96,29 +115,32 @@ onMounted(loadGroups)
       Loading groups...
     </div>
 
-    <div v-else-if="groups.length === 0" class="empty-message">
+    <div v-else-if="!groups || groups.length === 0" class="empty-message">
       No groups found. Add your first group!
     </div>
 
     <div v-else class="groups-grid">
-      <div v-for="group in groups" :key="group.id" class="group-card">
+      <div v-for="(group, index) in groups" :key="group?.id || index" class="group-card">
         <div class="group-info">
-          <h3>{{ group.name }}</h3>
-          <p><strong>Total Amount:</strong> ₹{{ group.total_amount.toLocaleString() }}</p>
-          <p><strong>Members:</strong> {{ group.member_count }}</p>
-          <p><strong>Start Date:</strong> {{ new Date(group.start_date).toLocaleDateString() }}</p>
-          <p><strong>End Date:</strong> {{ new Date(group.end_date).toLocaleDateString() }}</p>
+          <h3>{{ group?.name || 'Unnamed Group' }}</h3>
+          <p><strong>Total Amount:</strong> ₹{{ (group?.total_amount || 0).toLocaleString() }}</p>
+          <p><strong>Members:</strong> {{ group?.member_count || 0 }}</p>
+          <p><strong>Start Date:</strong> {{ group?.start_date ? new Date(group.start_date).toLocaleDateString() : 'Not set' }}</p>
+          <p><strong>End Date:</strong> {{ group?.end_date ? new Date(group.end_date).toLocaleDateString() : 'Not set' }}</p>
           <p>
             <strong>Status:</strong>
-            <span :class="['status', group.status]">{{ group.status }}</span>
+            <span :class="['status', group?.status || 'unknown']">{{ group?.status || 'Unknown' }}</span>
           </p>
         </div>
         <div class="group-actions">
-          <router-link :to="`/groups/edit/${group.id}`" class="edit-button">
+          <router-link :to="`/groups/edit/${group?.id}`" class="edit-button">
             Edit
           </router-link>
-          <router-link :to="`/groups/${group.id}/members`" class="members-button">
+          <router-link :to="`/groups/${group?.id}/members`" class="members-button">
             Add/Edit Members
+          </router-link>
+          <router-link :to="`/groups/${group?.id}/more`" class="more-button">
+            More
           </router-link>
           <button class="delete-button" @click="handleDeleteClick(group)">
             Delete
@@ -244,7 +266,7 @@ h2 {
   flex-wrap: wrap;
 }
 
-.edit-button, .delete-button, .members-button {
+.edit-button, .delete-button, .members-button, .more-button {
   padding: 0.5rem 1rem;
   border: none;
   border-radius: 4px;
@@ -255,29 +277,38 @@ h2 {
 }
 
 .edit-button {
-  background-color: #3498db;
+  background-color: #2c3e50;
+  color: white;
+}
+
+.members-button {
+  background-color: #059669;
+  color: white;
+}
+
+.more-button {
+  background-color: #6366f1;
+  color: white;
+}
+
+.delete-button {
+  background-color: #dc2626;
   color: white;
 }
 
 .edit-button:hover {
-  background-color: #2980b9;
-}
-
-.members-button {
-  background-color: #2ecc71;
-  color: white;
+  background-color: #34495e;
 }
 
 .members-button:hover {
-  background-color: #27ae60;
+  background-color: #047857;
 }
 
-.delete-button {
-  background-color: #e74c3c;
-  color: white;
+.more-button:hover {
+  background-color: #4f46e5;
 }
 
 .delete-button:hover {
-  background-color: #c0392b;
+  background-color: #b91c1c;
 }
 </style> 

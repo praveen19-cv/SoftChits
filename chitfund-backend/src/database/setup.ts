@@ -48,11 +48,20 @@ export function initializeDatabase() {
         member_count INTEGER DEFAULT 0,
         start_date DATE NOT NULL,
         end_date DATE NOT NULL,
+        number_of_months INTEGER DEFAULT 0,
         status TEXT CHECK(status IN ('active', 'inactive', 'completed')) DEFAULT 'active',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // Add number_of_months column if it doesn't exist
+    try {
+      db.exec(`ALTER TABLE groups ADD COLUMN number_of_months INTEGER DEFAULT 0`);
+    } catch (error) {
+      // Column might already exist, ignore error
+      console.log('number_of_months column might already exist');
+    }
 
     // Create group_members table
     db.exec(`
@@ -86,6 +95,20 @@ export function initializeDatabase() {
       )
     `);
 
+    // Create chit_dates table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS chit_dates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        chit_date DATE NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+        UNIQUE(group_id, chit_date)
+      )
+    `);
+
     console.log('Database tables initialized successfully');
   } catch (error) {
     console.error('Error initializing database:', error);
@@ -93,4 +116,4 @@ export function initializeDatabase() {
   }
 }
 
-export { db }; 
+export { db };

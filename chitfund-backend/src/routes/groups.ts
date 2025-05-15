@@ -201,7 +201,7 @@ router.get('/:id/chit-dates', (req, res) => {
 // Update chit dates for a group
 router.put('/:id/chit-dates', (req, res) => {
   try {
-    const { chitDates } = req.body;
+    const { chit_dates } = req.body;
     
     // Start a transaction
     db.prepare('BEGIN').run();
@@ -216,14 +216,25 @@ router.put('/:id/chit-dates', (req, res) => {
         VALUES (?, ?, ?)
       `);
 
-      for (const chitDate of chitDates) {
-        insertStmt.run(req.params.id, chitDate.chit_date, chitDate.amount);
+      for (const chitDate of chit_dates) {
+        insertStmt.run(
+          req.params.id,
+          chitDate.chit_date,
+          chitDate.minimum_amount || 0
+        );
       }
 
       // Commit the transaction
       db.prepare('COMMIT').run();
 
-      res.json({ message: 'Chit dates updated successfully' });
+      // Fetch and return the updated chit dates
+      const updatedChitDates = db.prepare(`
+        SELECT * FROM chit_dates 
+        WHERE group_id = ? 
+        ORDER BY chit_date ASC
+      `).all(req.params.id);
+
+      res.json(updatedChitDates);
     } catch (error) {
       // Rollback in case of error
       db.prepare('ROLLBACK').run();

@@ -88,9 +88,9 @@ export const useGroupsStore = defineStore('groups', {
         if (response.data) {
           // Add the new group to the list
           this.groups.push(response.data);
-          return response.data;
-        }
-        
+    return response.data;
+  }
+
         throw new Error('No data received from server');
       } catch (error: any) {
         console.error('Error creating group:', error);
@@ -109,7 +109,7 @@ export const useGroupsStore = defineStore('groups', {
         if (response.data) {
           // Update the group in the list
           const index = this.groups.findIndex(g => g.id === id);
-          if (index !== -1) {
+    if (index !== -1) {
             this.groups[index] = { ...this.groups[index], ...response.data };
           }
           return response.data;
@@ -148,9 +148,9 @@ export const useGroupsStore = defineStore('groups', {
         
         if (response.data) {
           this.currentGroup = response.data;
-          return response.data;
-        }
-        
+    return response.data;
+  }
+
         throw new Error('No data received from server');
       } catch (error: any) {
         console.error('Error fetching group:', error);
@@ -165,9 +165,7 @@ export const useGroupsStore = defineStore('groups', {
     async fetchChitDates(groupId: number) {
       try {
         this.loading = true;
-        console.log('Fetching chit dates for group:', groupId);
         const response = await api.get(`/api/groups/${groupId}/chit-dates`);
-        console.log('Chit dates response:', response.data);
         
         if (!response.data) {
           throw new Error('No data received from server');
@@ -188,19 +186,17 @@ export const useGroupsStore = defineStore('groups', {
     async updateChitDates(groupId: number, dates: ChitDate[]) {
       try {
         this.loading = true;
-        console.log('Updating chit dates for group:', groupId, 'with data:', dates);
         
-        // Ensure dates are in the correct format
+        // Format dates to match backend expectations
         const formattedDates = dates.map(date => ({
           chit_date: date.chit_date,
-          amount: Number(date.amount)
+          minimum_amount: Number(date.amount) || 0,
+          group_id: groupId
         }));
         
         const response = await api.put(`/api/groups/${groupId}/chit-dates`, { 
-          dates: formattedDates 
+          chit_dates: formattedDates
         });
-        
-        console.log('Update response:', response.data);
         
         if (!response.data) {
           throw new Error('No data received from server');
@@ -209,7 +205,93 @@ export const useGroupsStore = defineStore('groups', {
         this.chitDates = response.data;
         return this.chitDates;
       } catch (error: any) {
-        console.error('Error updating chit dates:', error.response?.data || error.message);
+        console.error('Error updating chit dates:', error);
+        this.error = error.response?.data?.message || error.message;
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async addMemberToGroup(groupId: number, memberId: number) {
+      try {
+        this.loading = true;
+        const currentMemberCount = this.currentGroup?.member_count ?? 0;
+        const response = await api.post(`/api/groups/${groupId}/members`, {
+          member_id: memberId,
+          group_member_id: currentMemberCount + 1
+        });
+
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+
+        // Update the current group's member count
+        if (this.currentGroup) {
+          this.currentGroup.member_count += 1;
+        }
+
+        return response.data;
+      } catch (error: any) {
+        console.error('Error adding member to group:', error);
+        this.error = error.response?.data?.message || error.message;
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async getGroupById(id: number) {
+      try {
+        this.loading = true;
+        const response = await api.get(`/api/groups/${id}`);
+        
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+        
+        this.currentGroup = response.data;
+        return response.data;
+      } catch (error: any) {
+        console.error('Error fetching group:', error);
+        this.error = error.response?.data?.message || error.message;
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async getGroupMembers(groupId: number) {
+      try {
+        this.loading = true;
+        const response = await api.get(`/api/groups/${groupId}/members`);
+        
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+        
+        return response.data;
+      } catch (error: any) {
+        console.error('Error fetching group members:', error);
+        this.error = error.response?.data?.message || error.message;
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async updateGroupMembers(groupId: number, members: Array<{ id: number, groupMemberId: string }>) {
+      try {
+        this.loading = true;
+        const response = await api.put(`/api/groups/${groupId}/members`, { members });
+        
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+        
+        return response.data;
+      } catch (error: any) {
+        console.error('Error updating group members:', error);
         this.error = error.response?.data?.message || error.message;
         throw error;
       } finally {

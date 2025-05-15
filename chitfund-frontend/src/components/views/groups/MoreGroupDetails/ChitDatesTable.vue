@@ -50,6 +50,14 @@
         <span v-else>Save Changes</span>
       </button>
     </div>
+
+    <!-- Standard Notification -->
+    <StandardNotification
+      :show="notification.show"
+      :message="notification.message"
+      :type="notification.type"
+      @close="notification.show = false"
+    />
   </div>
 </template>
 
@@ -57,9 +65,13 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { format, addMonths, parseISO, isAfter, isValid as isDateValid } from 'date-fns';
 import { useGroupsStore } from '@/stores/GroupsStore';
+import StandardNotification from '@/components/standards/StandardNotification.vue';
 
 export default {
   name: 'ChitDatesTable',
+  components: {
+    StandardNotification
+  },
   props: {
     groupId: {
       type: [String, Number],
@@ -83,6 +95,11 @@ export default {
     const chitDates = ref([]);
     const originalChitDates = ref([]);
     const hasChanges = ref(false);
+    const notification = ref({
+      show: false,
+      message: '',
+      type: 'success'
+    });
 
     const generateChitDates = () => {
       const dates = [];
@@ -122,19 +139,46 @@ export default {
       }
     };
 
+    const showNotification = (message, type = 'success') => {
+      notification.value = {
+        show: true,
+        message,
+        type
+      };
+    };
+
     const saveChitDates = async () => {
       try {
-        const datesToSave = chitDates.value.map(date => ({
-          chit_date: format(parseISO(date.chit_date), 'yyyy-MM-dd'),
-          amount: Number(date.amount) || 0
-        }));
+        // Ensure all dates are in the correct format
+        const datesToSave = chitDates.value.map(date => {
+          // Ensure the date is in YYYY-MM-DD format
+          const parsedDate = parseISO(date.chit_date);
+          if (!isDateValid(parsedDate)) {
+            throw new Error(`Invalid date: ${date.chit_date}`);
+          }
+          
+          return {
+            chit_date: format(parsedDate, 'yyyy-MM-dd'),
+            amount: Number(date.amount) || 0
+          };
+        });
+
+        // Sort dates chronologically
+        datesToSave.sort((a, b) => {
+          return parseISO(a.chit_date).getTime() - parseISO(b.chit_date).getTime();
+        });
         
         await store.updateChitDates(props.groupId, datesToSave);
+        
+        // Reload the dates after saving to ensure we have the latest data
         await loadChitDates();
+        showNotification('Chit dates saved successfully');
       } catch (error) {
         console.error('Error saving chit dates:', error);
+        // If save fails, revert to original values
         chitDates.value = JSON.parse(JSON.stringify(originalChitDates.value));
         hasChanges.value = false;
+        showNotification('Failed to save chit dates', 'error');
       }
     };
 
@@ -152,14 +196,25 @@ export default {
     };
 
     const validateDate = (date) => {
-      const selectedDate = parseISO(date.chit_date);
-      const start = parseISO(props.startDate);
-      const end = parseISO(props.endDate);
+      try {
+        const selectedDate = parseISO(date.chit_date);
+        const start = parseISO(props.startDate);
+        const end = parseISO(props.endDate);
 
-      if (isAfter(selectedDate, end) || isAfter(start, selectedDate)) {
-        date.chit_date = format(start, 'yyyy-MM-dd');
+        if (!isDateValid(selectedDate)) {
+          date.chit_date = format(start, 'yyyy-MM-dd');
+          return;
+        }
+
+        if (isAfter(selectedDate, end) || isAfter(start, selectedDate)) {
+          date.chit_date = format(start, 'yyyy-MM-dd');
+        }
+        hasChanges.value = true;
+      } catch (error) {
+        console.error('Error validating date:', error);
+        date.chit_date = format(parseISO(props.startDate), 'yyyy-MM-dd');
+        hasChanges.value = true;
       }
-      hasChanges.value = true;
     };
 
     const hasModifiedRows = computed(() => {
@@ -207,7 +262,8 @@ export default {
       isValidAmount,
       validateAmount,
       validateDate,
-      saveChitDates
+      saveChitDates,
+      notification
     };
   }
 };

@@ -38,10 +38,19 @@ interface ChitDate {
   amount: number;
 }
 
+interface MonthlySubscription {
+  month_number: number;
+  bid_amount: number;
+  total_dividend: number;
+  distributed_dividend: number;
+  monthly_subscription: number;
+}
+
 interface GroupState {
   groups: Group[];
   currentGroup: Group | null;
   chitDates: ChitDate[];
+  monthlySubscriptions: MonthlySubscription[];
   loading: boolean;
   error: string | null;
 }
@@ -51,6 +60,7 @@ export const useGroupsStore = defineStore('groups', {
     groups: [],
     currentGroup: null,
     chitDates: [],
+    monthlySubscriptions: [],
     loading: false,
     error: null
   }),
@@ -88,8 +98,8 @@ export const useGroupsStore = defineStore('groups', {
         if (response.data) {
           // Add the new group to the list
           this.groups.push(response.data);
-    return response.data;
-  }
+          return response.data;
+        }
 
         throw new Error('No data received from server');
       } catch (error: any) {
@@ -148,8 +158,8 @@ export const useGroupsStore = defineStore('groups', {
         
         if (response.data) {
           this.currentGroup = response.data;
-    return response.data;
-  }
+          return response.data;
+        }
 
         throw new Error('No data received from server');
       } catch (error: any) {
@@ -270,7 +280,7 @@ export const useGroupsStore = defineStore('groups', {
           throw new Error('No data received from server');
         }
         
-        return response.data;
+    return response.data;
       } catch (error: any) {
         console.error('Error fetching group members:', error);
         this.error = error.response?.data?.message || error.message;
@@ -292,6 +302,75 @@ export const useGroupsStore = defineStore('groups', {
         return response.data;
       } catch (error: any) {
         console.error('Error updating group members:', error);
+        this.error = error.response?.data?.message || error.message;
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async updateGroupCommission(groupId: number, commissionPercentage: number) {
+      try {
+        this.loading = true;
+        const response = await api.put(`/api/groups/${groupId}/commission`, {
+          commission_percentage: Number(commissionPercentage.toFixed(2))
+        });
+        
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+
+        // Update the current group if it's the one being modified
+        if (this.currentGroup?.id === groupId) {
+          this.currentGroup = { ...this.currentGroup, ...response.data };
+        }
+        
+        return response.data;
+      } catch (error: any) {
+        console.error('Error updating group commission:', error);
+        this.error = error instanceof Error ? error.message : 'Unknown error';
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async fetchMonthlySubscriptions(groupId: number) {
+      try {
+        this.loading = true;
+        const response = await api.get(`/api/groups/${groupId}/monthly-subscriptions`);
+        
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+        
+        this.monthlySubscriptions = response.data;
+        return this.monthlySubscriptions;
+      } catch (error: any) {
+        console.error('Error fetching monthly subscriptions:', error);
+        this.error = error.response?.data?.message || error.message;
+        this.monthlySubscriptions = [];
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async updateMonthlySubscriptions(groupId: number, subscriptions: MonthlySubscription[]) {
+      try {
+        this.loading = true;
+        const response = await api.put(`/api/groups/${groupId}/monthly-subscriptions`, {
+          subscriptions
+        });
+        
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+        
+        this.monthlySubscriptions = response.data;
+        return this.monthlySubscriptions;
+      } catch (error: any) {
+        console.error('Error updating monthly subscriptions:', error);
         this.error = error.response?.data?.message || error.message;
         throw error;
       } finally {

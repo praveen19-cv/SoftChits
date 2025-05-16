@@ -49,6 +49,7 @@ export function initializeDatabase() {
         start_date DATE NOT NULL,
         end_date DATE NOT NULL,
         number_of_months INTEGER DEFAULT 0,
+        commission_percentage DECIMAL(10,2) DEFAULT 4.00,
         status TEXT CHECK(status IN ('active', 'inactive', 'completed')) DEFAULT 'active',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -61,6 +62,14 @@ export function initializeDatabase() {
     } catch (error) {
       // Column might already exist, ignore error
       console.log('number_of_months column might already exist');
+    }
+
+    // Add commission_percentage column if it doesn't exist
+    try {
+      db.exec(`ALTER TABLE groups ADD COLUMN commission_percentage DECIMAL(10,2) DEFAULT 4.00`);
+    } catch (error) {
+      // Column might already exist, ignore error
+      console.log('commission_percentage column might already exist');
     }
 
     // Create group_members table
@@ -106,6 +115,23 @@ export function initializeDatabase() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
         UNIQUE(group_id, chit_date)
+      )
+    `);
+
+    // Create monthly_subscriptions table
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS monthly_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id INTEGER NOT NULL,
+        month_number INTEGER NOT NULL,
+        bid_amount DECIMAL(10,2) NOT NULL,
+        total_dividend DECIMAL(10,2) NOT NULL,
+        distributed_dividend DECIMAL(10,2) NOT NULL,
+        monthly_subscription DECIMAL(10,2) NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+        UNIQUE(group_id, month_number)
       )
     `);
 

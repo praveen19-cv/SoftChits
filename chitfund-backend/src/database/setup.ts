@@ -9,137 +9,109 @@ if (!fs.existsSync(dataDir)) {
 }
 
 const dbPath = path.join(dataDir, 'chitfund.db');
-const db = new Database(dbPath);
+
+// Configure database with better concurrency handling
+const db = new Database(dbPath, {
+  verbose: console.log,
+  fileMustExist: false,
+  // Add timeout and busy handling
+  timeout: 5000,
+  // Enable WAL mode for better concurrency
+  pragma: {
+    journal_mode: 'WAL',
+    synchronous: 'NORMAL',
+    busy_timeout: 5000
+  }
+});
 
 // Initialize database tables
-export function initializeDatabase() {
+export const initializeDatabase = () => {
   try {
-    // Create members table
+    // Create tables if they don't exist
     db.exec(`
       CREATE TABLE IF NOT EXISTS members (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
-        phone TEXT NOT NULL,
-        email TEXT NOT NULL,
-        address TEXT NOT NULL,
-        status TEXT CHECK(status IN ('active', 'inactive')) DEFAULT 'active',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+        phone TEXT,
+        address TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
 
-    // Add status column if it doesn't exist
-    try {
-      db.exec(`ALTER TABLE members ADD COLUMN status TEXT CHECK(status IN ('active', 'inactive')) DEFAULT 'active'`);
-    } catch (error) {
-      // Column might already exist, ignore error
-      console.log('Status column might already exist');
-    }
-
-    // Update existing members to have 'active' status
-    db.exec(`UPDATE members SET status = 'active' WHERE status IS NULL`);
-
-    // Create groups table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS groups (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
-        total_amount DECIMAL(10,2) NOT NULL,
-        member_count INTEGER DEFAULT 0,
-        start_date DATE NOT NULL,
-        end_date DATE NOT NULL,
-        number_of_months INTEGER DEFAULT 0,
-        commission_percentage DECIMAL(10,2) DEFAULT 4.00,
-        status TEXT CHECK(status IN ('active', 'inactive', 'completed')) DEFAULT 'active',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+        total_amount REAL NOT NULL,
+        member_count INTEGER NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        status TEXT NOT NULL,
+        number_of_months INTEGER NOT NULL,
+        commission_percentage REAL DEFAULT 4,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
 
-    // Add number_of_months column if it doesn't exist
-    try {
-      db.exec(`ALTER TABLE groups ADD COLUMN number_of_months INTEGER DEFAULT 0`);
-    } catch (error) {
-      // Column might already exist, ignore error
-      console.log('number_of_months column might already exist');
-    }
-
-    // Add commission_percentage column if it doesn't exist
-    try {
-      db.exec(`ALTER TABLE groups ADD COLUMN commission_percentage DECIMAL(10,2) DEFAULT 4.00`);
-    } catch (error) {
-      // Column might already exist, ignore error
-      console.log('commission_percentage column might already exist');
-    }
-
-    // Create group_members table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS group_members (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         group_id INTEGER NOT NULL,
         member_id INTEGER NOT NULL,
         group_member_id TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
-        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
-        UNIQUE(group_id, member_id),
-        UNIQUE(group_id, group_member_id)
-      )
-    `);
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id),
+        FOREIGN KEY (member_id) REFERENCES members(id)
+      );
 
-    // Create collections table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS collections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         group_id INTEGER NOT NULL,
         member_id INTEGER NOT NULL,
-        amount DECIMAL(10,2) NOT NULL,
-        collection_date DATE NOT NULL,
-        status TEXT CHECK(status IN ('pending', 'paid')) DEFAULT 'pending',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
-        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE
-      )
-    `);
+        amount REAL NOT NULL,
+        collection_date TEXT NOT NULL,
+        month_number INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id),
+        FOREIGN KEY (member_id) REFERENCES members(id)
+      );
 
-    // Create chit_dates table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS chit_dates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         group_id INTEGER NOT NULL,
-        chit_date DATE NOT NULL,
-        amount DECIMAL(10,2) NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
-        UNIQUE(group_id, chit_date)
-      )
-    `);
+        chit_date TEXT NOT NULL,
+        amount REAL NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id)
+      );
 
-    // Create monthly_subscriptions table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS monthly_subscriptions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         group_id INTEGER NOT NULL,
         month_number INTEGER NOT NULL,
-        bid_amount DECIMAL(10,2) NOT NULL,
-        total_dividend DECIMAL(10,2) NOT NULL,
-        distributed_dividend DECIMAL(10,2) NOT NULL,
-        monthly_subscription DECIMAL(10,2) NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
-        UNIQUE(group_id, month_number)
-      )
+        bid_amount REAL NOT NULL,
+        total_dividend REAL NOT NULL,
+        distributed_dividend REAL NOT NULL,
+        monthly_subscription REAL NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (group_id) REFERENCES groups(id)
+      );
     `);
 
-    console.log('Database tables initialized successfully');
+    console.log('Database initialized successfully');
   } catch (error) {
     console.error('Error initializing database:', error);
     throw error;
   }
-}
+};
+
+// Handle process termination
+process.on('SIGINT', () => {
+  db.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  db.close();
+  process.exit(0);
+});
 
 export { db };

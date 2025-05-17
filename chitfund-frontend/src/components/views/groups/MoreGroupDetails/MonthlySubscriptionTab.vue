@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import { debounce } from 'lodash'
 
 const props = defineProps<{
   groupId: number
@@ -93,30 +94,128 @@ const showNotification = (message: string, type: 'success' | 'error' = 'success'
 // Load initial data
 const loadData = async () => {
   try {
-    loading.value = true
-    await store.fetchGroupById(props.groupId)
-    await store.fetchChitDates(props.groupId)
-    await store.fetchMonthlySubscriptions(props.groupId)
+    loading.value = true;
+    await store.fetchGroupById(props.groupId);
+    await store.fetchChitDates(props.groupId);
+    await store.fetchMonthlySubscriptions(props.groupId);
     
     // Initialize months data
-    const numberOfMonths = store.currentGroup?.number_of_months || 0
-    const chitDates = store.chitDates
-    const subscriptions = store.monthlySubscriptions
-    const startDate = new Date(store.currentGroup?.start_date || '')
+    const numberOfMonths = (store.currentGroup?.number_of_months || 0) + 1;
+    const chitDates = store.chitDates;
+    const startDate = new Date(store.currentGroup?.start_date || '');
 
+    if (!store.currentGroup) {
+      throw new Error('Group details not found');
+    }
+
+    if (!chitDates.length) {
+      console.warn('No chit dates found for group');
+    }
+
+    // Try to fetch subscriptions
+    let subscriptions = store.monthlySubscriptions;
+    if (!subscriptions.length || subscriptions.length !== numberOfMonths) {
+      // Create initial subscriptions
+      const baseSubscription = store.currentGroup.total_amount / store.currentGroup.member_count;
+      const commissionAmount = (store.currentGroup.total_amount * commissionPercentage.value) / 100;
+      
+      // Ensure we create exactly numberOfMonths subscriptions
+      subscriptions = Array(numberOfMonths).fill(null).map((_, index) => {
+        if (index === 0) {
+          // Month 1: Only monthly subscription, other fields zero
+          return {
+            month_number: index,
+            bid_amount: 0,
+            total_dividend: 0,
+            distributed_dividend: 0,
+            monthly_subscription: baseSubscription
+          };
+        } else {
+          // For months 2 to N+1, use chitDates[index-1] if available
+          const chitDateIndex = index - 1;
+          const chitDate = chitDates[chitDateIndex];
+          const bidAmount = chitDate?.amount || 0;
+          const totalDividend = bidAmount - commissionAmount;
+          const distributedDividend = totalDividend / store.currentGroup!.member_count;
+          const monthlySubscription = baseSubscription - distributedDividend;
+
+          return {
+            month_number: index,
+            bid_amount: bidAmount,
+            total_dividend: totalDividend,
+            distributed_dividend: distributedDividend,
+            monthly_subscription: monthlySubscription
+          };
+        }
+      });
+
+      try {
+        // Save the subscriptions
+        await store.updateMonthlySubscriptions(props.groupId, subscriptions);
+        // Refresh subscriptions after saving
+        await store.fetchMonthlySubscriptions(props.groupId);
+        subscriptions = store.monthlySubscriptions;
+      } catch (error) {
+        console.error('Failed to save subscriptions:', error);
+        showNotification('Failed to save subscriptions. Please try again.', 'error');
+        return;
+      }
+    }
+
+    // Ensure we have exactly numberOfMonths entries
+    if (subscriptions.length !== numberOfMonths) {
+      console.warn(`Expected ${numberOfMonths} months but got ${subscriptions.length}`);
+      // If we don't have enough months, create them
+      if (subscriptions.length < numberOfMonths) {
+        const baseSubscription = store.currentGroup.total_amount / store.currentGroup.member_count;
+        const commissionAmount = (store.currentGroup.total_amount * commissionPercentage.value) / 100;
+        
+        // Add missing months
+        for (let i = subscriptions.length; i < numberOfMonths; i++) {
+          const chitDateIndex = i - 1;
+          const chitDate = chitDates[chitDateIndex];
+          const bidAmount = chitDate?.amount || 0;
+          const totalDividend = bidAmount - commissionAmount;
+          const distributedDividend = totalDividend / store.currentGroup!.member_count;
+          const monthlySubscription = baseSubscription - distributedDividend;
+
+          subscriptions.push({
+            month_number: i,
+            bid_amount: bidAmount,
+            total_dividend: totalDividend,
+            distributed_dividend: distributedDividend,
+            monthly_subscription: monthlySubscription
+          });
+        }
+
+        // Save the updated subscriptions
+        try {
+          await store.updateMonthlySubscriptions(props.groupId, subscriptions);
+          await store.fetchMonthlySubscriptions(props.groupId);
+          subscriptions = store.monthlySubscriptions;
+        } catch (error) {
+          console.error('Failed to save missing months:', error);
+          showNotification('Failed to save missing months. Please try again.', 'error');
+          return;
+        }
+      }
+    }
+
+    // Create months array with all months
     months.value = Array(numberOfMonths).fill(null).map((_, index) => {
-      const subscription = subscriptions.find(s => s.month_number === index)
-      let date = ''
+      const subscription = subscriptions.find(s => s.month_number === index);
+      let date = '';
       
       if (index === 0) {
         // Month 1: One month before start date
-        const month1Date = new Date(startDate)
-        month1Date.setMonth(month1Date.getMonth() - 1)
-        date = month1Date.toISOString().slice(0, 10)
+        const month1Date = new Date(startDate);
+        month1Date.setMonth(month1Date.getMonth() - 1);
+        date = month1Date.toISOString().slice(0, 10);
       } else {
-        // Month 2 onwards: Use chit date
-        const chitDate = chitDates[index - 1] // Use previous month's chit date
-        date = chitDate?.chit_date || ''
+        // For months 2 to N+1, use chitDates[index-1] if available
+        const chitDateIndex = index - 1;
+        const chitDate = chitDates[chitDateIndex];
+        date = chitDate?.chit_date || '';
       }
 
       return {
@@ -125,23 +224,24 @@ const loadData = async () => {
         totalDividend: subscription?.total_dividend || 0,
         distributedDividend: subscription?.distributed_dividend || 0,
         monthlySubscription: subscription?.monthly_subscription || 0
-      }
-    })
+      };
+    });
 
     // Calculate initial values
     months.value.forEach((_, index) => {
       if (index === 0) {
-        updateFirstMonthSubscription()
+        updateFirstMonthSubscription();
       } else {
-        calculateMonthValues(index)
+        calculateMonthValues(index);
       }
-    })
+    });
   } catch (error: any) {
-    showNotification(error.message || 'Failed to load data', 'error')
+    console.error('Error loading data:', error);
+    showNotification(error.message || 'Failed to load data', 'error');
   } finally {
-    loading.value = false
+    loading.value = false;
   }
-}
+};
 
 // Save all monthly data
 const saveMonthlyData = async () => {
@@ -163,6 +263,11 @@ const saveMonthlyData = async () => {
     loading.value = false
   }
 }
+
+// Debounced save function for bid amount
+const debouncedSaveMonthlyData = debounce(() => {
+  saveMonthlyData();
+}, 500);
 
 // Add date formatting function
 const formatDate = (dateString: string) => {
@@ -264,7 +369,6 @@ onMounted(loadData)
                     type="number"
                     v-model="month.monthlySubscription"
                     @input="updateFirstMonthSubscription"
-                    @change="saveMonthlyData"
                   />
                 </div>
               </template>
@@ -280,8 +384,7 @@ onMounted(loadData)
                   <input 
                     type="number"
                     v-model="month.bidAmount"
-                    @input="calculateMonthValues(index)"
-                    @change="saveMonthlyData"
+                    @input="() => { calculateMonthValues(index); debouncedSaveMonthlyData(); }"
                   />
                 </div>
                 <div class="field">
@@ -305,6 +408,12 @@ onMounted(loadData)
           </div>
         </div>
       </div>
+    </div>
+
+    <div style="text-align: right; margin-top: 2rem;">
+      <button class="save-button" @click="saveMonthlyData" :disabled="loading">
+        {{ loading ? 'Saving...' : 'Save All Changes' }}
+      </button>
     </div>
 
     <StandardNotification

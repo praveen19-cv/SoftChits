@@ -348,7 +348,7 @@ export const useGroupsStore = defineStore('groups', {
         return this.monthlySubscriptions;
       } catch (error: any) {
         console.error('Error fetching monthly subscriptions:', error);
-        this.error = error.response?.data?.message || error.message;
+        this.error = error.response?.data?.message || error.message || 'Failed to fetch monthly subscriptions';
         this.monthlySubscriptions = [];
         throw error;
       } finally {
@@ -359,8 +359,17 @@ export const useGroupsStore = defineStore('groups', {
     async updateMonthlySubscriptions(groupId: number, subscriptions: MonthlySubscription[]) {
       try {
         this.loading = true;
+        // Ensure all values are numbers and have default values
+        const formattedSubscriptions = subscriptions.map(sub => ({
+          month_number: Number(sub.month_number),
+          bid_amount: Number(sub.bid_amount || 0),
+          total_dividend: Number(sub.total_dividend || 0),
+          distributed_dividend: Number(sub.distributed_dividend || 0),
+          monthly_subscription: Number(sub.monthly_subscription || 0)
+        }));
+
         const response = await api.put(`/api/groups/${groupId}/monthly-subscriptions`, {
-          subscriptions
+          subscriptions: formattedSubscriptions
         });
         
         if (!response.data) {
@@ -371,8 +380,9 @@ export const useGroupsStore = defineStore('groups', {
         return this.monthlySubscriptions;
       } catch (error: any) {
         console.error('Error updating monthly subscriptions:', error);
-        this.error = error.response?.data?.message || error.message;
-        throw error;
+        const errorMessage = error.response?.data?.message || error.message || 'Failed to update monthly subscriptions';
+        this.error = errorMessage;
+        throw new Error(errorMessage);
       } finally {
         this.loading = false;
       }

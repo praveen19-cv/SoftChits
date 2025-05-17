@@ -41,6 +41,13 @@
       </table>
     </div>
     <div class="mt-3 d-flex justify-content-end">
+      <button
+        class="btn btn-primary export-btn"
+        @click="exportAsBidAmounts"
+        :disabled="store.loading"
+      >
+        Export as Bid Amount
+      </button>
       <button 
         class="btn btn-primary" 
         @click="saveChitDates"
@@ -61,217 +68,144 @@
   </div>
 </template>
 
-<script>
-import { ref, computed, onMounted, watch } from 'vue';
-import { format, addMonths, parseISO, isAfter, isValid as isDateValid } from 'date-fns';
-import { useGroupsStore } from '@/stores/GroupsStore';
-import StandardNotification from '@/components/standards/StandardNotification.vue';
+<script lang="ts" setup>
+import { ref, computed, onMounted, watch } from 'vue'
+import { format as formatDateFns, addMonths, parseISO, isAfter, isValid as isDateValid } from 'date-fns'
+import { useGroupsStore } from '@/stores/GroupsStore'
+import StandardNotification from '@/components/standards/StandardNotification.vue'
 
-export default {
-  name: 'ChitDatesTable',
-  components: {
-    StandardNotification
-  },
-  props: {
-    groupId: {
-      type: [String, Number],
-      required: true
-    },
-    startDate: {
-      type: String,
-      required: true
-    },
-    endDate: {
-      type: String,
-      required: true
-    },
-    numberOfMonths: {
-      type: Number,
-      required: true
-    }
-  },
-  setup(props) {
-    const store = useGroupsStore();
-    const chitDates = ref([]);
-    const originalChitDates = ref([]);
-    const hasChanges = ref(false);
-    const notification = ref({
-      show: false,
-      message: '',
-      type: 'success'
-    });
+const props = defineProps<{
+  groupId: string | number
+  startDate: string
+  endDate: string
+  numberOfMonths: number
+}>()
 
-    const generateChitDates = () => {
-      const dates = [];
-      let currentDate = parseISO(props.startDate);
-      const endDate = parseISO(props.endDate);
-      
-      while (!isAfter(currentDate, endDate)) {
-        dates.push({
-          chit_date: format(currentDate, 'yyyy-MM-dd'),
-          amount: 0
-        });
-        currentDate = addMonths(currentDate, 1);
-      }
-      
-      return dates;
-    };
+const store = useGroupsStore()
+const chitDates = ref<{ chit_date: string; amount: number }[]>([])
+const originalChitDates = ref<{ chit_date: string; amount: number }[]>([])
+const hasChanges = ref(false)
+const notification = ref({ show: false, message: '', type: 'success' })
 
-    const loadChitDates = async () => {
-      try {
-        const data = await store.fetchChitDates(props.groupId);
-        
-        if (data && Array.isArray(data) && data.length > 0) {
-          chitDates.value = data.map(date => ({
-            chit_date: date.chit_date,
-            amount: Number(date.amount) || 0
-          }));
-        } else {
-          chitDates.value = generateChitDates();
-        }
-        originalChitDates.value = JSON.parse(JSON.stringify(chitDates.value));
-        hasChanges.value = false;
-      } catch (error) {
-        console.error('Error loading chit dates:', error);
-        chitDates.value = generateChitDates();
-        originalChitDates.value = JSON.parse(JSON.stringify(chitDates.value));
-        hasChanges.value = false;
-      }
-    };
-
-    const showNotification = (message, type = 'success') => {
-      notification.value = {
-        show: true,
-        message,
-        type
-      };
-    };
-
-    const saveChitDates = async () => {
-      try {
-        // Ensure all dates are in the correct format
-        const datesToSave = chitDates.value.map(date => {
-          // Ensure the date is in YYYY-MM-DD format
-          const parsedDate = parseISO(date.chit_date);
-          if (!isDateValid(parsedDate)) {
-            throw new Error(`Invalid date: ${date.chit_date}`);
-          }
-          
-          return {
-            chit_date: format(parsedDate, 'yyyy-MM-dd'),
-            amount: Number(date.amount) || 0
-          };
-        });
-
-        // Sort dates chronologically
-        datesToSave.sort((a, b) => {
-          return parseISO(a.chit_date).getTime() - parseISO(b.chit_date).getTime();
-        });
-        
-        await store.updateChitDates(props.groupId, datesToSave);
-        
-        // Reload the dates after saving to ensure we have the latest data
-        await loadChitDates();
-        showNotification('Chit dates saved successfully');
-      } catch (error) {
-        console.error('Error saving chit dates:', error);
-        // If save fails, revert to original values
-        chitDates.value = JSON.parse(JSON.stringify(originalChitDates.value));
-        hasChanges.value = false;
-        showNotification('Failed to save chit dates', 'error');
-      }
-    };
-
-    const formatDate = (date) => {
-      return format(parseISO(date), 'dd-MMM-yyyy');
-    };
-
-    const isValidAmount = (amount) => {
-      return amount >= 0;
-    };
-
-    const validateAmount = (date) => {
-      date.amount = Math.max(0, Number(date.amount) || 0);
-      hasChanges.value = true;
-    };
-
-    const validateDate = (date) => {
-      try {
-        const selectedDate = parseISO(date.chit_date);
-        const start = parseISO(props.startDate);
-        const end = parseISO(props.endDate);
-
-        if (!isDateValid(selectedDate)) {
-          date.chit_date = format(start, 'yyyy-MM-dd');
-          return;
-        }
-
-        if (isAfter(selectedDate, end) || isAfter(start, selectedDate)) {
-          date.chit_date = format(start, 'yyyy-MM-dd');
-        }
-        hasChanges.value = true;
-      } catch (error) {
-        console.error('Error validating date:', error);
-        date.chit_date = format(parseISO(props.startDate), 'yyyy-MM-dd');
-        hasChanges.value = true;
-      }
-    };
-
-    const hasModifiedRows = computed(() => {
-      if (!chitDates.value || !originalChitDates.value) return false;
-      
-      return chitDates.value.some((date, index) => {
-        const original = originalChitDates.value[index];
-        if (!original) return false;
-        
-        return date.amount !== original.amount || date.chit_date !== original.chit_date;
-      });
-    });
-
-    const hasValidDates = computed(() => {
-      if (!chitDates.value) return false;
-      
-      return chitDates.value.every(date => {
-        try {
-          return isDateValid(parseISO(date.chit_date));
-        } catch (e) {
-          return false;
-        }
-      });
-    });
-
-    watch(() => props.startDate, () => {
-      loadChitDates();
-    });
-
-    watch(() => props.endDate, () => {
-      loadChitDates();
-    });
-
-    onMounted(() => {
-      loadChitDates();
-    });
-
-    return {
-      store,
-      chitDates,
-      hasChanges,
-      hasModifiedRows,
-      hasValidDates,
-      formatDate,
-      isValidAmount,
-      validateAmount,
-      validateDate,
-      saveChitDates,
-      notification
-    };
+function generateChitDates() {
+  const dates: { chit_date: string; amount: number }[] = []
+  let currentDate = parseISO(props.startDate)
+  const endDate = parseISO(props.endDate)
+  while (!isAfter(currentDate, endDate)) {
+    dates.push({ chit_date: formatDateFns(currentDate, 'yyyy-MM-dd'), amount: 0 })
+    currentDate = addMonths(currentDate, 1)
   }
-};
+  return dates
+}
+
+async function loadChitDates() {
+  try {
+    const data = await store.fetchChitDates(Number(props.groupId))
+    if (Array.isArray(data) && data.length) {
+      chitDates.value = data.map(d => ({ chit_date: d.chit_date, amount: Number(d.amount) || 0 }))
+    } else {
+      chitDates.value = generateChitDates()
+    }
+    originalChitDates.value = JSON.parse(JSON.stringify(chitDates.value))
+    hasChanges.value = false
+  } catch {
+    chitDates.value = generateChitDates()
+    originalChitDates.value = JSON.parse(JSON.stringify(chitDates.value))
+    hasChanges.value = false
+  }
+}
+
+function showNotification(message: string, type: 'success' | 'error' = 'success') {
+  notification.value = { show: true, message, type }
+}
+
+async function saveChitDates() {
+  try {
+    const datesToSave = chitDates.value.map(d => {
+      const parsed = parseISO(d.chit_date)
+      if (!isDateValid(parsed)) throw new Error(`Invalid date: ${d.chit_date}`)
+      return { chit_date: formatDateFns(parsed, 'yyyy-MM-dd'), amount: Number(d.amount) || 0 }
+    })
+    datesToSave.sort((a, b) => parseISO(a.chit_date).getTime() - parseISO(b.chit_date).getTime())
+    await store.updateChitDates(Number(props.groupId), datesToSave)
+    await loadChitDates()
+    showNotification('Chit dates saved successfully')
+  } catch (error: any) {
+    chitDates.value = JSON.parse(JSON.stringify(originalChitDates.value))
+    showNotification(error.message || 'Failed to save chit dates', 'error')
+  }
+}
+
+// New: export chitDates as monthly bid_amounts
+async function exportAsBidAmounts() {
+  try {
+    // Fetch existing monthly subscriptions
+    const subs = await store.fetchMonthlySubscriptions(Number(props.groupId))
+    // Map chitDates to subscription bid_amount
+    const updated = subs.map(sub => ({
+      ...sub,
+      bid_amount: sub.month_number === 0
+        ? 0
+        : (chitDates.value[sub.month_number - 1]?.amount || 0)
+    }))
+    // Update backend
+    await store.updateMonthlySubscriptions(Number(props.groupId), updated)
+    showNotification('Bid amounts exported to monthly subscriptions')
+  } catch (error: any) {
+    showNotification(error.message || 'Failed to export bid amounts', 'error')
+  }
+}
+
+const hasModifiedRows = computed(
+  () => chitDates.value.some((d, i) => {
+    const orig = originalChitDates.value[i]
+    return !!orig && (orig.chit_date !== d.chit_date || orig.amount !== d.amount)
+  })
+)
+
+const hasValidDates = computed(
+  () => chitDates.value.every(d => {
+    try { return isDateValid(parseISO(d.chit_date)) } catch { return false }
+  })
+)
+
+function validateAmount(d: { chit_date: string; amount: number }) {
+  d.amount = Math.max(0, Number(d.amount) || 0)
+  hasChanges.value = true
+}
+
+function validateDate(d: { chit_date: string; amount: number }) {
+  try {
+    const parsed = parseISO(d.chit_date)
+    const start = parseISO(props.startDate)
+    const end = parseISO(props.endDate)
+    if (!isDateValid(parsed) || isAfter(parsed, end) || isAfter(start, parsed)) {
+      d.chit_date = formatDateFns(start, 'yyyy-MM-dd')
+    }
+    hasChanges.value = true
+  } catch {
+    d.chit_date = formatDateFns(parseISO(props.startDate), 'yyyy-MM-dd')
+    hasChanges.value = true
+  }
+}
+
+function isValidAmount(amount: number): boolean {
+  return amount >= 0;
+}
+
+watch(() => props.startDate, loadChitDates)
+watch(() => props.endDate, loadChitDates)
+onMounted(loadChitDates)
 </script>
 
 <style scoped>
 .chit-dates-table {
   margin: 20px 0;
+}
+
+/* Custom spacing for Export button */
+.export-btn {
+  margin-right: 2rem;
 }
 
 h4 {

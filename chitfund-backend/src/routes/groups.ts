@@ -47,11 +47,11 @@ router.post('/', (req, res) => {
 
       const groupId = result.lastInsertRowid;
 
-      // Calculate and save initial monthly subscriptions
+      // Calculate base subscription
       const baseSubscription = total_amount / member_count;
       const commissionAmount = (total_amount * 4) / 100; // Default 4% commission
 
-      // --- Insert chit_dates first ---
+      // Insert chit dates
       const insertChitDate = db.prepare(`
         INSERT INTO chit_dates (group_id, chit_date, amount)
         VALUES (?, ?, ?)
@@ -59,16 +59,14 @@ router.post('/', (req, res) => {
       const start = new Date(start_date);
       
       // Insert chit dates (excluding last month)
-      for (let i = 0; i < number_of_months; i++) {
+      for (let i = 0; i < number_of_months - 1; i++) {
         const chitDate = new Date(start);
         chitDate.setMonth(chitDate.getMonth() + i);
-        // Format as YYYY-MM-DD
         const formatted = chitDate.toISOString().slice(0, 10);
-        // Set minimum amount as total_amount for all months
-        insertChitDate.run(groupId, formatted, total_amount);
+        insertChitDate.run(groupId, formatted, 0);
       }
 
-      // Now insert monthly subscriptions using chit date amounts
+      // Insert monthly subscriptions
       const insertSubscription = db.prepare(`
         INSERT INTO monthly_subscriptions (
           group_id, month_number, bid_amount, total_dividend, 
@@ -84,7 +82,7 @@ router.post('/', (req, res) => {
         ORDER BY chit_date ASC
       `).all(groupId) as { id: number; group_id: number; chit_date: string; amount: number }[];
 
-      // Insert subscriptions for all months (excluding last month)
+      // Insert subscriptions for all months
       for (let i = 0; i < number_of_months; i++) {
         if (i === 0) {
           // First month - fixed subscription only
@@ -96,10 +94,20 @@ router.post('/', (req, res) => {
             0, // No distributed dividend for first month
             baseSubscription // Just the base subscription
           );
+        } else if (i === number_of_months - 1) {
+          // Last month - fixed subscription only
+          insertSubscription.run(
+            groupId,
+            i,
+            0,
+            0,
+            0,
+            baseSubscription
+          );
         } else {
           // Other months - use minimum amount from chit date
           const chitDate = chitDates[i - 1]; // Use previous month's chit date
-          const bidAmount = chitDate.amount;
+          const bidAmount = chitDate?.amount || total_amount;
           const totalDividend = bidAmount - commissionAmount;
           const distributedDividend = totalDividend / member_count;
           const monthlySubscription = baseSubscription - distributedDividend;
@@ -135,18 +143,113 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const { name, total_amount, member_count, start_date, end_date, status, number_of_months } = req.body;
-    const result = db.prepare(`
-      UPDATE groups 
-      SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, status = ?, number_of_months = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months, req.params.id);
+    
+    // Start a transaction
+    db.prepare('BEGIN').run();
 
-    if (result.changes === 0) {
-      return res.status(404).json({ message: 'Group not found' });
+    try {
+      // Update the group
+      const result = db.prepare(`
+        UPDATE groups 
+        SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, status = ?, number_of_months = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months, req.params.id);
+
+      if (result.changes === 0) {
+        db.prepare('ROLLBACK').run();
+        return res.status(404).json({ message: 'Group not found' });
+      }
+
+      // Recalculate monthly subscriptions
+      const baseSubscription = total_amount / member_count;
+      const commissionAmount = (total_amount * 4) / 100;
+
+      // Delete existing chit dates and subscriptions
+      db.prepare('DELETE FROM chit_dates WHERE group_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM monthly_subscriptions WHERE group_id = ?').run(req.params.id);
+
+      // Insert new chit dates
+      const insertChitDate = db.prepare(`
+        INSERT INTO chit_dates (group_id, chit_date, amount)
+        VALUES (?, ?, ?)
+      `);
+      const start = new Date(start_date);
+      
+      // Insert chit dates (excluding last month)
+      for (let i = 0; i < number_of_months - 1; i++) {
+        const chitDate = new Date(start);
+        chitDate.setMonth(chitDate.getMonth() + i);
+        const formatted = chitDate.toISOString().slice(0, 10);
+        insertChitDate.run(req.params.id, formatted, 0);
+      }
+
+      // Get all chit dates
+      const chitDates = db.prepare(`
+        SELECT * FROM chit_dates 
+        WHERE group_id = ? 
+        ORDER BY chit_date ASC
+      `).all(req.params.id) as { id: number; group_id: number; chit_date: string; amount: number }[];
+
+      // Insert new subscriptions
+      const insertSubscription = db.prepare(`
+        INSERT INTO monthly_subscriptions (
+          group_id, month_number, bid_amount, total_dividend, 
+          distributed_dividend, monthly_subscription
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+
+      // Insert subscriptions for all months (including last month)
+      for (let i = 0; i < number_of_months; i++) {
+        if (i === 0) {
+          // First month - fixed subscription only
+          insertSubscription.run(
+            req.params.id,
+            i,
+            0,
+            0,
+            0,
+            baseSubscription
+          );
+        } else if (i < number_of_months - 1) {
+          // Other months (except last) - use minimum amount from chit date
+          const chitDate = chitDates[i - 1];
+          const bidAmount = chitDate.amount;
+          const totalDividend = bidAmount - commissionAmount;
+          const distributedDividend = totalDividend / member_count;
+          const monthlySubscription = baseSubscription - distributedDividend;
+
+          insertSubscription.run(
+            req.params.id,
+            i,
+            bidAmount,
+            totalDividend,
+            distributedDividend,
+            monthlySubscription
+          );
+        } else {
+          // Last month - same as first month
+          insertSubscription.run(
+            req.params.id,
+            i,
+            0,
+            0,
+            0,
+            baseSubscription
+          );
+        }
+      }
+
+      // Commit the transaction
+      db.prepare('COMMIT').run();
+
+      const updatedGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id);
+      res.json(updatedGroup);
+    } catch (error) {
+      // Rollback in case of error
+      db.prepare('ROLLBACK').run();
+      throw error;
     }
-
-    const updatedGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id);
-    res.json(updatedGroup);
   } catch (error) {
     console.error('Error updating group:', error);
     res.status(500).json({ message: 'Failed to update group' });
@@ -390,13 +493,35 @@ router.get('/:id/monthly-subscriptions', (req, res) => {
 router.put('/:id/monthly-subscriptions', (req, res) => {
   try {
     const { subscriptions } = req.body;
+    const groupId = parseInt(req.params.id);
     
+    // Validate group exists
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as { id: number; number_of_months: number } | undefined;
+    if (!group) {
+      console.error('Group not found:', groupId);
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Calculate expected months
+    const expectedMonths = group.number_of_months + 1;
+
+    // Validate number of months matches group's number_of_months + 1
+    if (!Array.isArray(subscriptions) || subscriptions.length !== expectedMonths) {
+      console.error('Invalid subscription count:', {
+        received: subscriptions?.length,
+        expected: expectedMonths
+      });
+      return res.status(400).json({ 
+        message: `Expected ${expectedMonths} months but received ${subscriptions?.length}`
+      });
+    }
+
     // Start a transaction
     db.prepare('BEGIN').run();
 
     try {
       // Delete existing subscriptions for this group
-      db.prepare('DELETE FROM monthly_subscriptions WHERE group_id = ?').run(req.params.id);
+      db.prepare('DELETE FROM monthly_subscriptions WHERE group_id = ?').run(groupId);
 
       // Insert new subscriptions
       const insertStmt = db.prepare(`
@@ -407,14 +532,26 @@ router.put('/:id/monthly-subscriptions', (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?)
       `);
 
-      for (const sub of subscriptions) {
+      for (let i = 0; i < expectedMonths; i++) {
+        const sub = subscriptions[i];
+        if (!sub) {
+          throw new Error(`Missing subscription for month ${i}`);
+        }
+        const monthNumber = Number(sub.month_number);
+        const bidAmount = Number(sub.bid_amount || 0);
+        const totalDividend = Number(sub.total_dividend || 0);
+        const distributedDividend = Number(sub.distributed_dividend || 0);
+        const monthlySubscription = Number(sub.monthly_subscription || 0);
+        if (isNaN(monthNumber) || isNaN(bidAmount) || isNaN(totalDividend) || isNaN(distributedDividend) || isNaN(monthlySubscription)) {
+          throw new Error(`Invalid numeric values in subscription data for month ${monthNumber}`);
+        }
         insertStmt.run(
-          req.params.id,
-          sub.month_number,
-          sub.bid_amount,
-          sub.total_dividend,
-          sub.distributed_dividend,
-          sub.monthly_subscription
+          groupId,
+          monthNumber,
+          bidAmount,
+          totalDividend,
+          distributedDividend,
+          monthlySubscription
         );
       }
 
@@ -426,17 +563,19 @@ router.put('/:id/monthly-subscriptions', (req, res) => {
         SELECT * FROM monthly_subscriptions 
         WHERE group_id = ? 
         ORDER BY month_number ASC
-      `).all(req.params.id);
+      `).all(groupId);
 
       res.json(updatedSubscriptions);
     } catch (error) {
-      // Rollback in case of error
       db.prepare('ROLLBACK').run();
       throw error;
     }
   } catch (error) {
-    console.error('Error updating monthly subscriptions:', error);
-    res.status(500).json({ message: 'Failed to update monthly subscriptions' });
+    res.status(500).json({ 
+      message: 'Failed to update monthly subscriptions',
+      error: error instanceof Error ? error.message : 'Unknown error',
+      details: error instanceof Error ? error.stack : undefined
+    });
   }
 });
 

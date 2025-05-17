@@ -365,7 +365,7 @@ onMounted(loadData)
               <template v-if="index === 0">
                 <div class="field">
                   <label>Monthly Subscription:</label>
-                  <input 
+                  <input  
                     type="number"
                     v-model="month.monthlySubscription"
                     @input="updateFirstMonthSubscription"
@@ -401,7 +401,7 @@ onMounted(loadData)
                 </div>
                 <div class="field">
                   <label>Monthly Subscription:</label>
-                  <span>₹{{ month.monthlySubscription.toLocaleString() }}</span>
+                  <span class="subscription-value">₹{{ month.monthlySubscription.toLocaleString() }}</span>
                 </div>
               </template>
             </div>
@@ -624,6 +624,11 @@ onMounted(loadData)
 .percentage-symbol {
   color: #666;
   font-weight: 500;
+}
+
+.field span.subscription-value {
+  font-size: 1.6rem;
+  font-weight: 800;
 }
 
 @media (max-width: 768px) {

@@ -1,5 +1,6 @@
 import express from 'express';
 import { db } from '../database/setup';
+import { GroupTableService } from '../services/GroupTableService';
 
 const router = express.Router();
 
@@ -31,9 +32,9 @@ router.get('/:id', (req, res) => {
 });
 
 // Create new group
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const { name, total_amount, member_count, start_date, end_date, status, number_of_months } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, status, number_of_months, commission_percentage } = req.body;
     
     // Start a transaction
     db.prepare('BEGIN').run();
@@ -41,93 +42,20 @@ router.post('/', (req, res) => {
     try {
       // Insert the group
       const result = db.prepare(`
-        INSERT INTO groups (name, total_amount, member_count, start_date, end_date, status, number_of_months)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months);
+        INSERT INTO groups (name, total_amount, member_count, start_date, end_date, status, number_of_months, commission_percentage)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months, commission_percentage);
 
       const groupId = result.lastInsertRowid;
 
-      // Calculate base subscription
-      const baseSubscription = total_amount / member_count;
-      const commissionAmount = (total_amount * 4) / 100; // Default 4% commission
-
-      // Insert chit dates
-      const insertChitDate = db.prepare(`
-        INSERT INTO chit_dates (group_id, chit_date, amount)
-        VALUES (?, ?, ?)
-      `);
-      const start = new Date(start_date);
-      
-      // Insert chit dates (excluding last month)
-      for (let i = 0; i < number_of_months - 1; i++) {
-        const chitDate = new Date(start);
-        chitDate.setMonth(chitDate.getMonth() + i);
-        const formatted = chitDate.toISOString().slice(0, 10);
-        insertChitDate.run(groupId, formatted, 0);
-      }
-
-      // Insert monthly subscriptions
-      const insertSubscription = db.prepare(`
-        INSERT INTO monthly_subscriptions (
-          group_id, month_number, bid_amount, total_dividend, 
-          distributed_dividend, monthly_subscription
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
-      // Get all chit dates for this group
-      const chitDates = db.prepare(`
-        SELECT * FROM chit_dates 
-        WHERE group_id = ? 
-        ORDER BY chit_date ASC
-      `).all(groupId) as { id: number; group_id: number; chit_date: string; amount: number }[];
-
-      // Insert subscriptions for all months
-      for (let i = 0; i < number_of_months; i++) {
-        if (i === 0) {
-          // First month - fixed subscription only
-          insertSubscription.run(
-            groupId,
-            i,
-            0, // No bid amount for first month
-            0, // No dividend for first month
-            0, // No distributed dividend for first month
-            baseSubscription // Just the base subscription
-          );
-        } else if (i === number_of_months - 1) {
-          // Last month - fixed subscription only
-          insertSubscription.run(
-            groupId,
-            i,
-            0,
-            0,
-            0,
-            baseSubscription
-          );
-        } else {
-          // Other months - use minimum amount from chit date
-          const chitDate = chitDates[i - 1]; // Use previous month's chit date
-          const bidAmount = chitDate?.amount || total_amount;
-          const totalDividend = bidAmount - commissionAmount;
-          const distributedDividend = totalDividend / member_count;
-          const monthlySubscription = baseSubscription - distributedDividend;
-
-          insertSubscription.run(
-            groupId,
-            i,
-            bidAmount,
-            totalDividend,
-            distributedDividend,
-            monthlySubscription
-          );
-        }
-      }
+      // Create all necessary tables for this group
+      const tables = await GroupTableService.createGroupTables(groupId, name);
 
       // Commit the transaction
       db.prepare('COMMIT').run();
 
       const newGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
-      res.status(201).json(newGroup);
+      res.status(201).json({ ...newGroup, tables });
     } catch (error) {
       // Rollback in case of error
       db.prepare('ROLLBACK').run();
@@ -140,111 +68,45 @@ router.post('/', (req, res) => {
 });
 
 // Update group
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
-    const { name, total_amount, member_count, start_date, end_date, status, number_of_months } = req.body;
+    const { id } = req.params;
+    const { name, total_amount, member_count, start_date, end_date, status, number_of_months, commission_percentage } = req.body;
     
     // Start a transaction
     db.prepare('BEGIN').run();
 
     try {
+      // Get the old group name
+      const oldGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+      if (!oldGroup) {
+        return res.status(404).json({ error: 'Group not found' });
+      }
+
       // Update the group
-      const result = db.prepare(`
+      db.prepare(`
         UPDATE groups 
-        SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, status = ?, number_of_months = ?, updated_at = CURRENT_TIMESTAMP
+        SET name = ?, total_amount = ?, member_count = ?, start_date = ?, 
+            end_date = ?, status = ?, number_of_months = ?, commission_percentage = ?,
+            updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months, req.params.id);
+      `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months, commission_percentage, id);
 
-      if (result.changes === 0) {
-        db.prepare('ROLLBACK').run();
-        return res.status(404).json({ message: 'Group not found' });
-      }
-
-      // Recalculate monthly subscriptions
-      const baseSubscription = total_amount / member_count;
-      const commissionAmount = (total_amount * 4) / 100;
-
-      // Delete existing chit dates and subscriptions
-      db.prepare('DELETE FROM chit_dates WHERE group_id = ?').run(req.params.id);
-      db.prepare('DELETE FROM monthly_subscriptions WHERE group_id = ?').run(req.params.id);
-
-      // Insert new chit dates
-      const insertChitDate = db.prepare(`
-        INSERT INTO chit_dates (group_id, chit_date, amount)
-        VALUES (?, ?, ?)
-      `);
-      const start = new Date(start_date);
-      
-      // Insert chit dates (excluding last month)
-      for (let i = 0; i < number_of_months - 1; i++) {
-        const chitDate = new Date(start);
-        chitDate.setMonth(chitDate.getMonth() + i);
-        const formatted = chitDate.toISOString().slice(0, 10);
-        insertChitDate.run(req.params.id, formatted, 0);
-      }
-
-      // Get all chit dates
-      const chitDates = db.prepare(`
-        SELECT * FROM chit_dates 
-        WHERE group_id = ? 
-        ORDER BY chit_date ASC
-      `).all(req.params.id) as { id: number; group_id: number; chit_date: string; amount: number }[];
-
-      // Insert new subscriptions
-      const insertSubscription = db.prepare(`
-        INSERT INTO monthly_subscriptions (
-          group_id, month_number, bid_amount, total_dividend, 
-          distributed_dividend, monthly_subscription
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-
-      // Insert subscriptions for all months (including last month)
-      for (let i = 0; i < number_of_months; i++) {
-        if (i === 0) {
-          // First month - fixed subscription only
-          insertSubscription.run(
-            req.params.id,
-            i,
-            0,
-            0,
-            0,
-            baseSubscription
-          );
-        } else if (i < number_of_months - 1) {
-          // Other months (except last) - use minimum amount from chit date
-          const chitDate = chitDates[i - 1];
-          const bidAmount = chitDate.amount;
-          const totalDividend = bidAmount - commissionAmount;
-          const distributedDividend = totalDividend / member_count;
-          const monthlySubscription = baseSubscription - distributedDividend;
-
-          insertSubscription.run(
-            req.params.id,
-            i,
-            bidAmount,
-            totalDividend,
-            distributedDividend,
-            monthlySubscription
-          );
-        } else {
-          // Last month - same as first month
-          insertSubscription.run(
-            req.params.id,
-            i,
-            0,
-            0,
-            0,
-            baseSubscription
-          );
-        }
+      // If name changed, rename all related tables
+      if (oldGroup.name !== name) {
+        // Delete old tables
+        await GroupTableService.deleteGroupTables(id, oldGroup.name);
+        // Create new tables
+        await GroupTableService.createGroupTables(id, name);
       }
 
       // Commit the transaction
       db.prepare('COMMIT').run();
 
-      const updatedGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id);
-      res.json(updatedGroup);
+      const updatedGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+      const tables = GroupTableService.getGroupTableNames(id, name);
+
+      res.json({ ...updatedGroup, tables });
     } catch (error) {
       // Rollback in case of error
       db.prepare('ROLLBACK').run();
@@ -257,32 +119,26 @@ router.put('/:id', (req, res) => {
 });
 
 // Delete group
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
-    // Start a transaction
-    db.prepare('BEGIN').run();
-    try {
-      // Delete related chit_dates
-      db.prepare('DELETE FROM chit_dates WHERE group_id = ?').run(req.params.id);
-      // Delete related monthly_subscriptions
-      db.prepare('DELETE FROM monthly_subscriptions WHERE group_id = ?').run(req.params.id);
-      // Delete related group_members
-      db.prepare('DELETE FROM group_members WHERE group_id = ?').run(req.params.id);
-      // Delete the group
-      const result = db.prepare('DELETE FROM groups WHERE id = ?').run(req.params.id);
-      if (result.changes === 0) {
-        db.prepare('ROLLBACK').run();
-        return res.status(404).json({ message: 'Group not found' });
-      }
-      db.prepare('COMMIT').run();
-      res.json({ message: 'Group and related data deleted successfully' });
-    } catch (error) {
-      db.prepare('ROLLBACK').run();
-      throw error;
+    const { id } = req.params;
+
+    // Get group details before deletion
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
     }
+
+    // Delete all group-related tables
+    await GroupTableService.deleteGroupTables(id, group.name);
+
+    // Delete the group (this will cascade delete related records in other tables)
+    db.prepare('DELETE FROM groups WHERE id = ?').run(id);
+
+    res.status(204).send();
   } catch (error) {
     console.error('Error deleting group:', error);
-    res.status(500).json({ message: 'Failed to delete group' });
+    res.status(500).json({ error: 'Failed to delete group' });
   }
 });
 
@@ -576,6 +432,31 @@ router.put('/:id/monthly-subscriptions', (req, res) => {
       error: error instanceof Error ? error.message : 'Unknown error',
       details: error instanceof Error ? error.stack : undefined
     });
+  }
+});
+
+// Create tables for existing group
+router.post('/:id/create-tables', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get group details
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Create tables for this group
+    const tables = await GroupTableService.createGroupTables(id, group.name);
+
+    res.json({ 
+      message: 'Tables created successfully',
+      group,
+      tables 
+    });
+  } catch (error) {
+    console.error('Error creating tables for group:', error);
+    res.status(500).json({ error: 'Failed to create tables for group' });
   }
 });
 

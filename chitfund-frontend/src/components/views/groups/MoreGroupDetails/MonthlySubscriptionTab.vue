@@ -124,15 +124,15 @@ const loadData = async () => {
         if (index === 0) {
           // Month 1: Only monthly subscription, other fields zero
           return {
-            month_number: index,
+            month_number: index + 1,
             bid_amount: 0,
             total_dividend: 0,
             distributed_dividend: 0,
             monthly_subscription: baseSubscription
           };
         } else {
-          // For months 2 to N+1, use chitDates[index-1] if available
-          const chitDateIndex = index - 1;
+          // For months 2 to N+1, use chitDates[index-2] if available
+          const chitDateIndex = index - 2;
           const chitDate = chitDates[chitDateIndex];
           const bidAmount = chitDate?.amount || 0;
           const totalDividend = bidAmount - commissionAmount;
@@ -140,7 +140,7 @@ const loadData = async () => {
           const monthlySubscription = baseSubscription - distributedDividend;
 
           return {
-            month_number: index,
+            month_number: index + 1,
             bid_amount: bidAmount,
             total_dividend: totalDividend,
             distributed_dividend: distributedDividend,
@@ -172,20 +172,32 @@ const loadData = async () => {
         
         // Add missing months
         for (let i = subscriptions.length; i < numberOfMonths; i++) {
-          const chitDateIndex = i - 1;
-          const chitDate = chitDates[chitDateIndex];
-          const bidAmount = chitDate?.amount || 0;
-          const totalDividend = bidAmount - commissionAmount;
-          const distributedDividend = totalDividend / store.currentGroup!.member_count;
-          const monthlySubscription = baseSubscription - distributedDividend;
+          if (i === 0) {
+            // Month 1: Only monthly subscription, other fields zero
+            subscriptions.push({
+              month_number: i + 1,
+              bid_amount: 0,
+              total_dividend: 0,
+              distributed_dividend: 0,
+              monthly_subscription: baseSubscription
+            });
+          } else {
+            // For months 2 onwards
+            const chitDateIndex = i - 2;
+            const chitDate = chitDates[chitDateIndex];
+            const bidAmount = chitDate?.amount || 0;
+            const totalDividend = bidAmount - commissionAmount;
+            const distributedDividend = totalDividend / store.currentGroup!.member_count;
+            const monthlySubscription = baseSubscription - distributedDividend;
 
-          subscriptions.push({
-            month_number: i,
-            bid_amount: bidAmount,
-            total_dividend: totalDividend,
-            distributed_dividend: distributedDividend,
-            monthly_subscription: monthlySubscription
-          });
+            subscriptions.push({
+              month_number: i + 1,
+              bid_amount: bidAmount,
+              total_dividend: totalDividend,
+              distributed_dividend: distributedDividend,
+              monthly_subscription: monthlySubscription
+            });
+          }
         }
 
         // Save the updated subscriptions
@@ -203,7 +215,7 @@ const loadData = async () => {
 
     // Create months array with all months
     months.value = Array(numberOfMonths).fill(null).map((_, index) => {
-      const subscription = subscriptions.find(s => s.month_number === index);
+      const subscription = subscriptions.find(s => s.month_number === index + 1);
       let date = '';
       
       if (index === 0) {
@@ -248,7 +260,7 @@ const saveMonthlyData = async () => {
   try {
     loading.value = true
     const subscriptions = months.value.map((month, index) => ({
-      month_number: index,
+      month_number: index + 1,
       bid_amount: month.bidAmount,
       total_dividend: month.totalDividend,
       distributed_dividend: month.distributedDividend,

@@ -82,6 +82,17 @@ onUnmounted(() => {
           <router-link to="/collections/add" class="dropdown-item" @click="handleNavigation">Add Collection</router-link>
         </div>
       </div>
+
+      <div class="dropdown">
+        <button class="nav-item" @click.stop="toggleDropdown('reports')">
+          <i class="fas fa-chart-bar"></i> Reports
+          <span class="arrow">▼</span>
+        </button>
+        <div v-show="activeMenu === 'reports'" class="dropdown-menu">
+          <router-link to="/reports/chit-ledger" class="dropdown-item" @click="handleNavigation">Chit Ledger</router-link>
+          <router-link to="/reports/customer-sheet" class="dropdown-item" @click="handleNavigation">Customer Sheet</router-link>
+        </div>
+      </div>
     </div>
   </nav>
 </template>

@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import Home from '../components/home/Home.vue'
+import reportRoutes from './reportRoutes'
 
 const routes: Array<RouteRecordRaw> = [
   {
@@ -57,7 +58,8 @@ const routes: Array<RouteRecordRaw> = [
     path: '/collections/add',
     name: 'add-collection',
     component: () => import('../components/views/collections/AddCollection.vue')
-  }
+  },
+  ...reportRoutes
 ]
 
 function createRouterInstance() {

@@ -141,13 +141,27 @@ async function exportAsBidAmounts() {
   try {
     // Fetch existing monthly subscriptions
     const subs = await store.fetchMonthlySubscriptions(Number(props.groupId))
-    // Map chitDates to subscription bid_amount
-    const updated = subs.map(sub => ({
-      ...sub,
-      bid_amount: sub.month_number === 0
-        ? 0
-        : (chitDates.value[sub.month_number - 1]?.amount || 0)
-    }))
+    // Map chitDates to subscription bid_amount, starting from month 2
+    const updated = subs.map(sub => {
+      if (sub.month_number === 1) {
+        // Month 1 should have 0 bid amount
+        return {
+          ...sub,
+          bid_amount: 0,
+          total_dividend: 0,
+          distributed_dividend: 0
+        }
+      } else {
+        // For months 2 onwards, use chitDates array
+        const chitDateIndex = sub.month_number - 2
+        const chitDate = chitDates.value[chitDateIndex]
+        const bidAmount = chitDate?.amount || 0
+        return {
+          ...sub,
+          bid_amount: bidAmount
+        }
+      }
+    })
     // Update backend
     await store.updateMonthlySubscriptions(Number(props.groupId), updated)
     showNotification('Bid amounts exported to monthly subscriptions')

@@ -14,15 +14,16 @@ const dbPath = path.join(dataDir, 'chitfund.db');
 const db = new Database(dbPath, {
   verbose: console.log,
   fileMustExist: false,
-  // Add timeout and busy handling
-  timeout: 5000,
-  // Enable WAL mode for better concurrency
+  timeout: 30000, // 30 second timeout
+  // Add these options for better concurrency
+  readonly: false,
+  // Disable WAL mode initially
   pragma: {
-    journal_mode: 'WAL',
+    journal_mode: 'DELETE',
     synchronous: 'NORMAL',
-    busy_timeout: 5000
+    busy_timeout: 30000
   }
-});
+} as Database.Options);
 
 // Initialize database tables
 export const initializeDatabase = () => {
@@ -70,7 +71,7 @@ export const initializeDatabase = () => {
         collection_date TEXT NOT NULL,
         month_number INTEGER NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (group_id) REFERENCES groups(id),
+        FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
         FOREIGN KEY (member_id) REFERENCES members(id)
       );
 
@@ -93,6 +94,15 @@ export const initializeDatabase = () => {
         monthly_subscription REAL NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (group_id) REFERENCES groups(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT CHECK(role IN ('admin', 'agent')),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
     `);
 

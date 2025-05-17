@@ -10,6 +10,7 @@ export interface Member {
   email: string;
   address: string;
   status: string;
+  group_id: number;
 }
 
 const useMembersStore = defineStore('members', () => {

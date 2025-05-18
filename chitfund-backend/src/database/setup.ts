@@ -8,25 +8,73 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const dbPath = path.join(dataDir, 'chitfund.db');
-
-// Configure database with better concurrency handling
-const db = new Database(dbPath, {
+// Configure database with busy timeout and retry logic
+const db = new Database(path.join(dataDir, 'chitfund.db'), {
   verbose: console.log,
-  fileMustExist: false,
-  timeout: 30000, // 30 second timeout
-  // Add these options for better concurrency
-  readonly: false,
-  // Disable WAL mode initially
+  // Set busy timeout to 5 seconds
+  timeout: 5000,
+  // Enable WAL mode for better concurrency
   pragma: {
-    journal_mode: 'DELETE',
+    journal_mode: 'WAL',
     synchronous: 'NORMAL',
-    busy_timeout: 30000
+    busy_timeout: 5000,
+    foreign_keys: 'ON'
   }
 } as Database.Options);
 
+// Helper function to execute queries with retry logic
+export function executeWithRetry<T>(operation: () => T, maxRetries = 3): T {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return operation();
+    } catch (error: any) {
+      lastError = error;
+      if (error.code === 'SQLITE_BUSY' && attempt < maxRetries) {
+        // Wait for a random time between 100ms and 1000ms before retrying
+        const delay = Math.floor(Math.random() * 900) + 100;
+        console.log(`Database busy, retrying in ${delay}ms (attempt ${attempt}/${maxRetries})`);
+        new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  
+  throw lastError;
+}
+
+// Wrap the database object with retry logic
+const dbWithRetry = {
+  prepare: (sql: string) => {
+    const stmt = db.prepare(sql);
+    return {
+      ...stmt,
+      run: (...params: any[]) => executeWithRetry(() => stmt.run(...params)),
+      get: (...params: any[]) => executeWithRetry(() => stmt.get(...params)),
+      all: (...params: any[]) => executeWithRetry(() => stmt.all(...params))
+    };
+  },
+  transaction: (fn: Function) => {
+    return executeWithRetry(() => {
+      db.prepare('BEGIN').run();
+      try {
+        const result = fn();
+        db.prepare('COMMIT').run();
+        return result;
+      } catch (error) {
+        db.prepare('ROLLBACK').run();
+        throw error;
+      }
+    });
+  }
+};
+
+export { dbWithRetry as db };
+
 // Initialize database tables
-export const initializeDatabase = () => {
+export function initializeDatabase() {
   try {
     // Create tables if they don't exist
     db.exec(`
@@ -111,7 +159,7 @@ export const initializeDatabase = () => {
     console.error('Error initializing database:', error);
     throw error;
   }
-};
+}
 
 // Handle process termination
 process.on('SIGINT', () => {
@@ -123,5 +171,3 @@ process.on('SIGTERM', () => {
   db.close();
   process.exit(0);
 });
-
-export { db };

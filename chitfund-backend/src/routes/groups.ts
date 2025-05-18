@@ -4,11 +4,26 @@ import { GroupTableService } from '../services/GroupTableService';
 
 const router = express.Router();
 
+// Define interfaces
+interface Group {
+  id: number;
+  name: string;
+  total_amount: number;
+  member_count: number;
+  start_date: string;
+  end_date: string;
+  status: string;
+  number_of_months: number;
+  commission_percentage: number;
+  created_at: string;
+  updated_at: string;
+}
+
 // Get all groups
 router.get('/', (req, res) => {
   try {
     console.log('Fetching all groups...');
-    const groups = db.prepare('SELECT * FROM groups ORDER BY created_at DESC').all();
+    const groups = db.prepare('SELECT * FROM groups ORDER BY created_at DESC').all() as Group[];
     console.log('Groups found:', groups);
     res.json(groups);
   } catch (error) {
@@ -20,7 +35,7 @@ router.get('/', (req, res) => {
 // Get group by ID
 router.get('/:id', (req, res) => {
   try {
-    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id);
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id) as Group | undefined;
     if (!group) {
       return res.status(404).json({ message: 'Group not found' });
     }
@@ -46,7 +61,7 @@ router.post('/', async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(name, total_amount, member_count, start_date, end_date, status, number_of_months, commission_percentage);
 
-      const groupId = result.lastInsertRowid;
+      const groupId = Number(result.lastInsertRowid);
 
       // Create all necessary tables for this group
       const tables = await GroupTableService.createGroupTables(groupId, name);
@@ -54,7 +69,7 @@ router.post('/', async (req, res) => {
       // Commit the transaction
       db.prepare('COMMIT').run();
 
-      const newGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
+      const newGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group;
       res.status(201).json({ ...newGroup, tables });
     } catch (error) {
       // Rollback in case of error
@@ -70,7 +85,7 @@ router.post('/', async (req, res) => {
 // Update group
 router.put('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
     const { name, total_amount, member_count, start_date, end_date, status, number_of_months, commission_percentage } = req.body;
     
     // Start a transaction
@@ -78,7 +93,7 @@ router.put('/:id', async (req, res) => {
 
     try {
       // Get the old group name
-      const oldGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+      const oldGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
       if (!oldGroup) {
         return res.status(404).json({ error: 'Group not found' });
       }
@@ -103,7 +118,7 @@ router.put('/:id', async (req, res) => {
       // Commit the transaction
       db.prepare('COMMIT').run();
 
-      const updatedGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+      const updatedGroup = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group;
       const tables = GroupTableService.getGroupTableNames(id, name);
 
       res.json({ ...updatedGroup, tables });
@@ -121,10 +136,10 @@ router.put('/:id', async (req, res) => {
 // Delete group
 router.delete('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
 
     // Get group details before deletion
-    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
@@ -145,13 +160,20 @@ router.delete('/:id', async (req, res) => {
 // Get group members
 router.get('/:id/members', (req, res) => {
   try {
+    const id = Number(req.params.id);
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
     const members = db.prepare(`
       SELECT m.*, gm.group_member_id 
-      FROM group_members gm 
+      FROM ${tables.membersTable} gm 
       JOIN members m ON gm.member_id = m.id 
       WHERE gm.group_id = ?
       ORDER BY gm.group_member_id
-    `).all(req.params.id);
+    `).all(id);
     res.json(members);
   } catch (error) {
     console.error('Error fetching group members:', error);
@@ -162,18 +184,26 @@ router.get('/:id/members', (req, res) => {
 // Add member to group
 router.post('/:id/members', (req, res) => {
   try {
+    const id = Number(req.params.id);
     const { memberId, groupMemberId } = req.body;
+
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
     const result = db.prepare(`
-      INSERT INTO group_members (group_id, member_id, group_member_id)
+      INSERT INTO ${tables.membersTable} (group_id, member_id, group_member_id)
       VALUES (?, ?, ?)
-    `).run(req.params.id, memberId, groupMemberId);
+    `).run(id, memberId, groupMemberId);
 
     const newMember = db.prepare(`
       SELECT m.*, gm.group_member_id 
-      FROM group_members gm 
+      FROM ${tables.membersTable} gm 
       JOIN members m ON gm.member_id = m.id 
       WHERE gm.group_id = ? AND gm.member_id = ?
-    `).get(req.params.id, memberId);
+    `).get(id, memberId);
 
     res.status(201).json(newMember);
   } catch (error) {
@@ -185,10 +215,19 @@ router.post('/:id/members', (req, res) => {
 // Remove member from group
 router.delete('/:id/members/:memberId', (req, res) => {
   try {
+    const id = Number(req.params.id);
+    const memberId = Number(req.params.memberId);
+
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
     const result = db.prepare(`
-      DELETE FROM group_members 
+      DELETE FROM ${tables.membersTable} 
       WHERE group_id = ? AND member_id = ?
-    `).run(req.params.id, req.params.memberId);
+    `).run(id, memberId);
 
     if (result.changes === 0) {
       return res.status(404).json({ message: 'Member not found in group' });
@@ -204,28 +243,36 @@ router.delete('/:id/members/:memberId', (req, res) => {
 // Update group members
 router.put('/:id/members', (req, res) => {
   try {
+    const id = Number(req.params.id);
     const { members } = req.body;
+    
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
     
     // Start a transaction
     db.prepare('BEGIN').run();
 
     try {
       // Delete all existing members
-      db.prepare('DELETE FROM group_members WHERE group_id = ?').run(req.params.id);
+      db.prepare(`DELETE FROM ${tables.membersTable} WHERE group_id = ?`).run(id);
 
       // Insert new members
       const insertStmt = db.prepare(`
-        INSERT INTO group_members (group_id, member_id, group_member_id)
+        INSERT INTO ${tables.membersTable} (group_id, member_id, group_member_id)
         VALUES (?, ?, ?)
       `);
 
       for (const member of members) {
-        insertStmt.run(req.params.id, member.id, member.groupMemberId);
+        insertStmt.run(id, member.id, member.groupMemberId);
       }
 
       // Update group member count
       db.prepare('UPDATE groups SET member_count = ? WHERE id = ?')
-        .run(members.length, req.params.id);
+        .run(members.length, id);
 
       // Commit the transaction
       db.prepare('COMMIT').run();
@@ -245,11 +292,18 @@ router.put('/:id/members', (req, res) => {
 // Get chit dates for a group
 router.get('/:id/chit-dates', (req, res) => {
   try {
+    const id = Number(req.params.id);
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
     const chitDates = db.prepare(`
-      SELECT * FROM chit_dates 
+      SELECT * FROM ${tables.chitDatesTable} 
       WHERE group_id = ? 
       ORDER BY chit_date ASC
-    `).all(req.params.id);
+    `).all(id);
     res.json(chitDates);
   } catch (error) {
     console.error('Error fetching chit dates:', error);
@@ -260,24 +314,32 @@ router.get('/:id/chit-dates', (req, res) => {
 // Update chit dates for a group
 router.put('/:id/chit-dates', (req, res) => {
   try {
+    const id = Number(req.params.id);
     const { chit_dates } = req.body;
+    
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
     
     // Start a transaction
     db.prepare('BEGIN').run();
 
     try {
       // Delete existing chit dates for this group
-      db.prepare('DELETE FROM chit_dates WHERE group_id = ?').run(req.params.id);
+      db.prepare(`DELETE FROM ${tables.chitDatesTable} WHERE group_id = ?`).run(id);
 
       // Insert new chit dates
       const insertStmt = db.prepare(`
-        INSERT INTO chit_dates (group_id, chit_date, amount)
+        INSERT INTO ${tables.chitDatesTable} (group_id, chit_date, amount)
         VALUES (?, ?, ?)
       `);
 
       for (const chitDate of chit_dates) {
         insertStmt.run(
-          req.params.id,
+          id,
           chitDate.chit_date,
           chitDate.minimum_amount || 0
         );
@@ -288,10 +350,10 @@ router.put('/:id/chit-dates', (req, res) => {
 
       // Fetch and return the updated chit dates
       const updatedChitDates = db.prepare(`
-        SELECT * FROM chit_dates 
+        SELECT * FROM ${tables.chitDatesTable} 
         WHERE group_id = ? 
         ORDER BY chit_date ASC
-      `).all(req.params.id);
+      `).all(id);
 
       res.json(updatedChitDates);
     } catch (error) {
@@ -333,11 +395,18 @@ router.put('/:id/commission', (req, res) => {
 // Get monthly subscriptions for a group
 router.get('/:id/monthly-subscriptions', (req, res) => {
   try {
+    const id = Number(req.params.id);
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
     const subscriptions = db.prepare(`
-      SELECT * FROM monthly_subscriptions 
+      SELECT * FROM ${tables.subscriptionsTable} 
       WHERE group_id = ? 
       ORDER BY month_number ASC
-    `).all(req.params.id);
+    `).all(id);
     res.json(subscriptions);
   } catch (error) {
     console.error('Error fetching monthly subscriptions:', error);
@@ -348,66 +417,40 @@ router.get('/:id/monthly-subscriptions', (req, res) => {
 // Update monthly subscriptions for a group
 router.put('/:id/monthly-subscriptions', (req, res) => {
   try {
+    const id = Number(req.params.id);
     const { subscriptions } = req.body;
-    const groupId = parseInt(req.params.id);
     
-    // Validate group exists
-    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as { id: number; number_of_months: number } | undefined;
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
     if (!group) {
-      console.error('Group not found:', groupId);
-      return res.status(404).json({ message: 'Group not found' });
+      return res.status(404).json({ error: 'Group not found' });
     }
 
-    // Calculate expected months
-    const expectedMonths = group.number_of_months + 1;
-
-    // Validate number of months matches group's number_of_months + 1
-    if (!Array.isArray(subscriptions) || subscriptions.length !== expectedMonths) {
-      console.error('Invalid subscription count:', {
-        received: subscriptions?.length,
-        expected: expectedMonths
-      });
-      return res.status(400).json({ 
-        message: `Expected ${expectedMonths} months but received ${subscriptions?.length}`
-      });
-    }
-
+    const tables = GroupTableService.getGroupTableNames(id, group.name);
+    
     // Start a transaction
     db.prepare('BEGIN').run();
 
     try {
       // Delete existing subscriptions for this group
-      db.prepare('DELETE FROM monthly_subscriptions WHERE group_id = ?').run(groupId);
+      db.prepare(`DELETE FROM ${tables.subscriptionsTable} WHERE group_id = ?`).run(id);
 
       // Insert new subscriptions
       const insertStmt = db.prepare(`
-        INSERT INTO monthly_subscriptions (
+        INSERT INTO ${tables.subscriptionsTable} (
           group_id, month_number, bid_amount, total_dividend, 
           distributed_dividend, monthly_subscription
         )
         VALUES (?, ?, ?, ?, ?, ?)
       `);
 
-      for (let i = 0; i < expectedMonths; i++) {
-        const sub = subscriptions[i];
-        if (!sub) {
-          throw new Error(`Missing subscription for month ${i}`);
-        }
-        const monthNumber = Number(sub.month_number);
-        const bidAmount = Number(sub.bid_amount || 0);
-        const totalDividend = Number(sub.total_dividend || 0);
-        const distributedDividend = Number(sub.distributed_dividend || 0);
-        const monthlySubscription = Number(sub.monthly_subscription || 0);
-        if (isNaN(monthNumber) || isNaN(bidAmount) || isNaN(totalDividend) || isNaN(distributedDividend) || isNaN(monthlySubscription)) {
-          throw new Error(`Invalid numeric values in subscription data for month ${monthNumber}`);
-        }
+      for (const sub of subscriptions) {
         insertStmt.run(
-          groupId,
-          monthNumber,
-          bidAmount,
-          totalDividend,
-          distributedDividend,
-          monthlySubscription
+          id,
+          sub.month_number,
+          sub.bid_amount || 0,
+          sub.total_dividend || 0,
+          sub.distributed_dividend || 0,
+          sub.monthly_subscription || 0
         );
       }
 
@@ -416,32 +459,30 @@ router.put('/:id/monthly-subscriptions', (req, res) => {
 
       // Fetch and return the updated subscriptions
       const updatedSubscriptions = db.prepare(`
-        SELECT * FROM monthly_subscriptions 
+        SELECT * FROM ${tables.subscriptionsTable} 
         WHERE group_id = ? 
         ORDER BY month_number ASC
-      `).all(groupId);
+      `).all(id);
 
       res.json(updatedSubscriptions);
     } catch (error) {
+      // Rollback in case of error
       db.prepare('ROLLBACK').run();
       throw error;
     }
   } catch (error) {
-    res.status(500).json({ 
-      message: 'Failed to update monthly subscriptions',
-      error: error instanceof Error ? error.message : 'Unknown error',
-      details: error instanceof Error ? error.stack : undefined
-    });
+    console.error('Error updating monthly subscriptions:', error);
+    res.status(500).json({ message: 'Failed to update monthly subscriptions' });
   }
 });
 
 // Create tables for existing group
 router.post('/:id/create-tables', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
 
     // Get group details
-    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined;
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }

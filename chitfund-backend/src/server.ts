@@ -22,23 +22,23 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   res.status(500).json({ message: 'Something went wrong!' });
 });
 
+// Routes
+app.use('/api/members', memberRoutes);
+app.use('/api/groups', groupRoutes);
+app.use('/api/collections', collectionRoutes);
+app.use('/api/auth', authRoutes);
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
 // Initialize database and start server
-function startServer() {
+async function startServer() {
   try {
-    // Initialize SQLite database
-    initializeDatabase();
+    // Initialize database
+    await initializeDatabase();
     console.log('Database initialized successfully');
-
-    // Routes
-    app.use('/api/members', memberRoutes);
-    app.use('/api/groups', groupRoutes);
-    app.use('/api/collections', collectionRoutes);
-    app.use('/api/auth', authRoutes);
-
-    // Health check
-    app.get('/health', (req, res) => {
-      res.json({ status: 'ok' });
-    });
 
     // Start server
     app.listen(port, () => {

@@ -1,4 +1,4 @@
-import { db } from '../database/setup';
+import { getDb } from '../database/setup';
 
 export class GroupTableService {
   static getTableName(groupId: number, groupName: string, tableType: string): string {
@@ -7,6 +7,7 @@ export class GroupTableService {
   }
 
   static async createGroupTables(groupId: number, groupName: string) {
+    const db = getDb();
     try {
       // Create collection table
       const collectionTableName = this.getTableName(groupId, groupName, 'collection');
@@ -101,17 +102,17 @@ export class GroupTableService {
   }
 
   static async deleteGroupTables(groupId: number, groupName: string) {
+    const db = getDb();
     try {
-      const tableTypes = [
-        'collection',
-        'collection_balance',
-        'group_members',
-        'chit_dates',
-        'monthly_subscription'
+      const tableNames = [
+        this.getTableName(groupId, groupName, 'collection'),
+        this.getTableName(groupId, groupName, 'collection_balance'),
+        this.getTableName(groupId, groupName, 'group_members'),
+        this.getTableName(groupId, groupName, 'chit_dates'),
+        this.getTableName(groupId, groupName, 'monthly_subscription')
       ];
 
-      for (const tableType of tableTypes) {
-        const tableName = this.getTableName(groupId, groupName, tableType);
+      for (const tableName of tableNames) {
         db.prepare(`DROP TABLE IF EXISTS ${tableName}`).run();
       }
     } catch (error) {

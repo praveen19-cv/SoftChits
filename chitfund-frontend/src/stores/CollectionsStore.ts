@@ -44,32 +44,87 @@ export const useCollectionsStore = defineStore('collections', () => {
   const error = ref('');
 
   async function getTableName(groupId: number): Promise<string> {
-    const group = groupsStore.groups.find(g => g.id === groupId);
+    // First try to get from store
+    let group = groupsStore.groups.find(g => g.id === groupId);
+    
+    // If not in store, try to fetch it
+    if (!group) {
+      try {
+        await groupsStore.fetchGroupById(groupId);
+        group = groupsStore.currentGroup;
+      } catch (err) {
+        console.error('Error fetching group:', err);
+        throw new Error('Group not found');
+      }
+    }
+
     if (!group) {
       throw new Error('Group not found');
     }
+
     // Remove any special characters and spaces from group name
     const cleanGroupName = group.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
     return `collection_${groupId}_${cleanGroupName}`;
   }
 
-  async function fetchCollections() {
-    const response = await api.get('/collections');
-    collections.value = response.data;
+  async function fetchCollections(groupId: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const tableName = await getTableName(groupId);
+      const response = await api.get(`/collections/${groupId}`);
+      collections.value = response.data;
+      return response.data;
+    } catch (error: any) {
+      console.error('Error fetching collections:', error);
+      throw new Error(error.response?.data?.error || 'Failed to fetch collections');
+    } finally {
+      loading.value = false;
+    }
   }
 
-  async function getCollectionById(id: number) {
-    const response = await api.get(`/collections/${id}`);
-    return response.data;
+  async function getCollectionById(id: number, groupId: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const tableName = await getTableName(groupId);
+      const response = await api.get(`/collections/${groupId}/${id}`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error fetching collection:', error);
+      throw new Error(error.response?.data?.error || 'Failed to fetch collection');
+    } finally {
+      loading.value = false;
+    }
   }
 
   async function createCollection(collection: Omit<Collection, 'id'>) {
     try {
+      loading.value = true;
+      error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
       const tableName = await getTableName(collection.group_id);
       // First, ensure the table exists
-      await api.post(`/collections/${tableName}/create-table`);
+      await api.post(`/collections/${collection.group_id}/create-table`);
       // Then create the collection
-      const response = await api.post(`/collections/${tableName}`, collection);
+      const response = await api.post(`/collections`, collection);
       if (response.data) {
         collections.value.push(response.data);
       }
@@ -80,6 +135,8 @@ export const useCollectionsStore = defineStore('collections', () => {
         throw new Error('Failed to create collection table. Please try again.');
       }
       throw new Error(error.response?.data?.error || 'Failed to create collection');
+    } finally {
+      loading.value = false;
     }
   }
 
@@ -87,28 +144,63 @@ export const useCollectionsStore = defineStore('collections', () => {
     if (!collection.group_id) {
       throw new Error('Group ID is required for update');
     }
-    const tableName = await getTableName(collection.group_id);
-    const response = await api.put(`/collections/${tableName}/${id}`, {
-      collection
-    });
-    const index = collections.value.findIndex(c => c.id === id);
-    if (index !== -1) {
-      collections.value[index] = response.data;
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const tableName = await getTableName(collection.group_id);
+      const response = await api.put(`/collections/${id}`, collection);
+      const index = collections.value.findIndex(c => c.id === id);
+      if (index !== -1) {
+        collections.value[index] = response.data;
+      }
+      return response.data;
+    } catch (error: any) {
+      console.error('Error updating collection:', error);
+      throw new Error(error.response?.data?.error || 'Failed to update collection');
+    } finally {
+      loading.value = false;
     }
   }
 
   async function deleteCollection(id: number, groupId: number) {
-    const tableName = await getTableName(groupId);
-    await api.delete(`/collections/${tableName}/${id}`);
-    collections.value = collections.value.filter(c => c.id !== id);
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const tableName = await getTableName(groupId);
+      await api.delete(`/collections/${id}?group_id=${groupId}`);
+      collections.value = collections.value.filter(c => c.id !== id);
+    } catch (error: any) {
+      console.error('Error deleting collection:', error);
+      throw new Error(error.response?.data?.error || 'Failed to delete collection');
+    } finally {
+      loading.value = false;
+    }
   }
 
   async function fetchCollectionsByDateAndGroup(date: string, groupId: number) {
     try {
       loading.value = true;
       error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
       const tableName = await getTableName(groupId);
-      const response = await api.get(`/collections/${tableName}/by-date?date=${date}`);
+      const response = await api.get(`/collections/by-date-group/${groupId}/${date}`);
       return response.data;
     } catch (err: any) {
       error.value = err.response?.data?.message || 'Failed to fetch collections';
@@ -120,11 +212,22 @@ export const useCollectionsStore = defineStore('collections', () => {
 
   async function fetchCollectionsByGroup(groupId: number): Promise<ExistingCollection[]> {
     try {
-      const response = await api.get(`/collections/collection_${groupId}_${getTableName(groupId)}`);
+      loading.value = true;
+      error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const tableName = await getTableName(groupId);
+      const response = await api.get(`/collections/${groupId}`);
       return response.data;
     } catch (error) {
       console.error('Error fetching collections by group:', error);
       throw error;
+    } finally {
+      loading.value = false;
     }
   }
 
@@ -132,7 +235,14 @@ export const useCollectionsStore = defineStore('collections', () => {
     try {
       loading.value = true;
       error.value = '';
-      const response = await api.get(`/collections/balances/${groupId}`);
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const tableName = await getTableName(groupId);
+      const response = await api.get(`/collections/${groupId}/balances`);
       collectionBalances.value = response.data;
       return response.data;
     } catch (err: any) {

@@ -1,5 +1,6 @@
 import express from 'express';
-import { db } from '../database/setup';
+import { getDb } from '../database/setup';
+import { GroupTableService } from '../services/GroupTableService';
 
 const router = express.Router();
 
@@ -31,383 +32,311 @@ interface CollectionBalance {
   last_updated: string;
 }
 
-// Get all collection tables
-router.get('/', (req, res) => {
-  try {
-    const tables = db.prepare(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name LIKE 'collection_%'
-    `).all();
-    res.json(tables);
-  } catch (error) {
-    console.error('Error fetching collection tables:', error);
-    res.status(500).json({ error: 'Failed to fetch collection tables' });
+// Helper function to handle database operations with retries
+async function withRetry<T>(operation: () => T, maxRetries = 5): Promise<T> {
+  let lastError;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return operation();
+    } catch (error: any) {
+      lastError = error;
+      if (error.code === 'SQLITE_BUSY') {
+        // Exponential backoff
+        const delay = Math.min(100 * Math.pow(2, i), 2000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
   }
-});
+  throw lastError;
+}
 
-// Create a new collection table for a group
-router.post('/:tableName/create-table', (req, res) => {
+// Helper function to execute a transaction with retries
+async function executeTransaction<T>(db: Database, transactionFn: () => T): Promise<T> {
+  return withRetry(() => {
+    const transaction = db.transaction(transactionFn);
+    return transaction();
+  });
+}
+
+// Get all collections for a group
+router.get('/:groupId', async (req, res) => {
   try {
-    const { tableName } = req.params;
-    if (!tableName) {
-      return res.status(400).json({ error: 'Table name is required' });
+    const { groupId } = req.params;
+    const db = getDb();
+    
+    // Get group info with retry
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId)
+    );
+    
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
     }
 
-    // Create the collection table if it doesn't exist
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS ${tableName} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        collection_date TEXT NOT NULL,
-        group_id INTEGER NOT NULL,
-        member_id INTEGER NOT NULL,
-        installment_number INTEGER NOT NULL,
-        collection_amount DECIMAL(10,2) NOT NULL,
-        remaining_balance DECIMAL(10,2) NOT NULL,
-        is_completed BOOLEAN DEFAULT FALSE,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (group_id) REFERENCES groups(id),
-        FOREIGN KEY (member_id) REFERENCES members(id)
-      )
-    `).run();
-
-    // Create the corresponding balance table
-    const balanceTableName = `collection_balance_${tableName.replace('collection_', '')}`;
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS ${balanceTableName} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id INTEGER NOT NULL,
-        member_id INTEGER NOT NULL,
-        installment_number INTEGER NOT NULL,
-        total_paid DECIMAL(10,2) NOT NULL DEFAULT 0,
-        remaining_balance DECIMAL(10,2) NOT NULL,
-        is_completed BOOLEAN DEFAULT FALSE,
-        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (group_id) REFERENCES groups(id),
-        FOREIGN KEY (member_id) REFERENCES members(id),
-        UNIQUE(group_id, member_id, installment_number)
-      )
-    `).run();
-
-    res.status(201).json({ 
-      message: `Tables ${tableName} and ${balanceTableName} created successfully`,
-      collectionTable: tableName,
-      balanceTable: balanceTableName
-    });
+    const tableName = GroupTableService.getTableName(groupId, group.name, 'collection');
+    const collections = await withRetry(() => 
+      db.prepare(`SELECT * FROM ${tableName} ORDER BY collection_date DESC`).all()
+    );
+    
+    res.json(collections);
   } catch (error: any) {
-    console.error('Error creating collection tables:', error);
-    res.status(500).json({ error: 'Failed to create collection tables' });
+    console.error('Error fetching collections:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
 // Get collections by date and group
-router.get('/by-date-group', (req, res) => {
+router.get('/by-date-group/:groupId/:date', async (req, res) => {
   try {
-    const { date, groupId } = req.query;
-    if (!date || !groupId) {
-      return res.status(400).json({ error: 'Date and group ID are required' });
-    }
-
-    // Get the table name for this group
-    const group = db.prepare('SELECT name FROM groups WHERE id = ?').get(groupId) as Group | undefined;
+    const { groupId, date } = req.params;
+    const db = getDb();
+    
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
 
-    const tableName = `collection_${groupId}_${group.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()}`;
+    const tableName = GroupTableService.getTableName(groupId, group.name, 'collection');
+    const collections = await withRetry(() => 
+      db.prepare(`SELECT * FROM ${tableName} WHERE collection_date = ? ORDER BY created_at DESC`)
+        .all(date)
+    );
     
-    // Check if table exists
-    const tableExists = db.prepare(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name = ?
-    `).get(tableName);
-
-    if (!tableExists) {
-      return res.json([]); // Return empty array if table doesn't exist
-    }
-    
-    // Get collections for the specified date and group
-    const collections = db.prepare(`
-      SELECT c.*, m.name as member_name 
-      FROM ${tableName} c
-      JOIN members m ON c.member_id = m.id
-      WHERE c.collection_date = ? AND c.group_id = ?
-      ORDER BY c.installment_number
-    `).all(date, groupId);
-
     res.json(collections);
-  } catch (error) {
-    console.error('Error fetching collections:', error);
-    res.status(500).json({ error: 'Failed to fetch collections' });
+  } catch (error: any) {
+    console.error('Error fetching collections by date:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Get collections by date from a specific table
-router.get('/:tableName/by-date', (req, res) => {
+// Create a new collection
+router.post('/', async (req, res) => {
   try {
-    const { tableName } = req.params;
-    const { date } = req.query;
+    const { group_id, member_id, collection_date, installment_number, collection_amount } = req.body;
+    const db = getDb();
     
-    if (!date) {
-      return res.status(400).json({ error: 'Date is required' });
-    }
-
-    // Check if table exists
-    const tableExists = db.prepare(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name = ?
-    `).get(tableName);
-
-    if (!tableExists) {
-      return res.json([]); // Return empty array if table doesn't exist
-    }
+    // Get group info with retry
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(group_id)
+    );
     
-    // Get collections for the specified date
-    const collections = db.prepare(`
-      SELECT c.*, m.name as member_name 
-      FROM ${tableName} c
-      JOIN members m ON c.member_id = m.id
-      WHERE c.collection_date = ?
-      ORDER BY c.installment_number
-    `).all(date);
-
-    res.json(collections);
-  } catch (error) {
-    console.error('Error fetching collections:', error);
-    res.status(500).json({ error: 'Failed to fetch collections' });
-  }
-});
-
-// Get all collections from a specific table
-router.get('/:tableName', (req, res) => {
-  try {
-    const { tableName } = req.params;
-    const collections = db.prepare(`SELECT * FROM ${tableName}`).all();
-    res.json(collections);
-  } catch (error) {
-    console.error('Error fetching collections:', error);
-    res.status(500).json({ error: 'Failed to fetch collections' });
-  }
-});
-
-// Get collection by ID from a specific table
-router.get('/:tableName/:id', (req, res) => {
-  try {
-    const { tableName, id } = req.params;
-    const collection = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id);
-    if (!collection) {
-      return res.status(404).json({ error: 'Collection not found' });
-    }
-    res.json(collection);
-  } catch (error) {
-    console.error('Error fetching collection:', error);
-    res.status(500).json({ error: 'Failed to fetch collection' });
-  }
-});
-
-// Create new collection in a specific table
-router.post('/:tableName', (req, res) => {
-  try {
-    const { tableName } = req.params;
-    const collection = req.body;
-    
-    if (!collection) {
-      return res.status(400).json({ error: 'Collection data is required' });
-    }
-
-    const { date, group_id, member_id, installment_string, amount } = collection;
-    
-    if (!date || !group_id || !member_id || !installment_string || !amount) {
-      return res.status(400).json({ 
-        error: 'Missing required fields',
-        details: { date, group_id, member_id, installment_string, amount }
-      });
-    }
-
-    // Get group details for monthly subscription amount
-    const group = db.prepare('SELECT total_amount, member_count FROM groups WHERE id = ?').get(group_id) as Group;
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
-    const monthlySubscription = group.total_amount / group.member_count;
 
-    // Get the balance table name
-    const balanceTableName = `collection_balance_${tableName.replace('collection_', '')}`;
+    const tableName = GroupTableService.getTableName(group_id, group.name, 'collection');
+    const balanceTableName = GroupTableService.getTableName(group_id, group.name, 'collection_balance');
 
-    // Parse installment string (e.g., "1c,2")
-    const installments = installment_string.split(',').map((inst: string) => {
-      const isCompleted = inst.endsWith('c');
-      const number = parseInt(inst.replace('c', ''));
-      return { number, isCompleted };
-    });
-
-    // Sort installments by number
-    installments.sort((a: { number: number }, b: { number: number }) => a.number - b.number);
-
-    // Check if previous installments are completed
-    for (let i = 0; i < installments.length; i++) {
-      const inst = installments[i];
-      if (i > 0) {
-        const prevInst = installments[i - 1];
-        if (!prevInst.isCompleted) {
-          return res.status(400).json({ 
-            error: `Cannot add installment ${inst.number} before completing installment ${prevInst.number}`
-          });
-        }
-      }
-    }
-
-    // Calculate amounts for each installment
-    const results = [];
-    let remainingAmount = amount;
-
-    for (const inst of installments) {
-      // Get or create balance record for this installment
-      let balanceRecord = db.prepare(`
-        SELECT * FROM ${balanceTableName}
-        WHERE group_id = ? AND member_id = ? AND installment_number = ?
-      `).get(group_id, member_id, inst.number) as CollectionBalance | undefined;
-
-      if (!balanceRecord) {
-        // Create new balance record
-        db.prepare(`
-          INSERT INTO ${balanceTableName} (
-            group_id, member_id, installment_number, 
-            total_paid, remaining_balance, is_completed
-          )
-          VALUES (?, ?, ?, 0, ?, FALSE)
-        `).run(group_id, member_id, inst.number, monthlySubscription);
-        
-        balanceRecord = db.prepare(`
-          SELECT * FROM ${balanceTableName}
-          WHERE group_id = ? AND member_id = ? AND installment_number = ?
-        `).get(group_id, member_id, inst.number) as CollectionBalance;
-      }
-
-      const amountForThisInstallment = Math.min(remainingAmount, balanceRecord.remaining_balance);
-      const newTotalPaid = balanceRecord.total_paid + amountForThisInstallment;
-      const newRemainingBalance = monthlySubscription - newTotalPaid;
-      const isFullyPaid = newRemainingBalance <= 0;
-
-      // Update balance record
-      db.prepare(`
-        UPDATE ${balanceTableName}
-        SET total_paid = ?, 
-            remaining_balance = ?, 
-            is_completed = ?,
-            last_updated = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `).run(newTotalPaid, newRemainingBalance, isFullyPaid ? 1 : 0, balanceRecord.id);
-
-      // Create the collection record
+    const result = await executeTransaction(db, () => {
+      // Insert into collections table
       const result = db.prepare(`
         INSERT INTO ${tableName} (
           collection_date, group_id, member_id, installment_number, 
           collection_amount, remaining_balance, is_completed
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(
-        date, 
-        group_id, 
-        member_id, 
-        inst.number,
-        amountForThisInstallment,
-        newRemainingBalance,
-        isFullyPaid ? 1 : 0
+        collection_date,
+        group_id,
+        member_id,
+        installment_number,
+        collection_amount,
+        collection_amount,
+        false
       );
 
-      const newCollection = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(result.lastInsertRowid);
-      results.push(newCollection);
+      // Update or insert into collection balance table
+      db.prepare(`
+        INSERT INTO ${balanceTableName} (
+          group_id, member_id, installment_number, total_paid, 
+          remaining_balance, is_completed
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(group_id, member_id, installment_number) 
+        DO UPDATE SET 
+          total_paid = total_paid + ?,
+          remaining_balance = remaining_balance - ?,
+          last_updated = CURRENT_TIMESTAMP
+      `).run(
+        group_id,
+        member_id,
+        installment_number,
+        collection_amount,
+        collection_amount,
+        false,
+        collection_amount,
+        collection_amount
+      );
 
-      remainingAmount -= amountForThisInstallment;
-      if (remainingAmount <= 0) break;
-    }
+      return result;
+    });
 
-    res.status(201).json(results);
+    res.status(201).json({ id: result.lastInsertRowid });
   } catch (error: any) {
     console.error('Error creating collection:', error);
-    res.status(500).json({ error: 'Failed to create collection', details: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Update collection in a specific table
-router.put('/:tableName/:id', (req, res) => {
+// Update a collection
+router.put('/:id', async (req, res) => {
   try {
-    const { tableName, id } = req.params;
-    const { collection } = req.body;
-    if (!collection) {
-      return res.status(400).json({ error: 'Collection data is required' });
-    }
-
-    const { date, group_id, member_id, installment_number, amount, is_completed } = collection;
-    const result = db.prepare(`
-      UPDATE ${tableName}
-      SET date = ?, group_id = ?, member_id = ?, installment_number = ?, amount = ?, is_completed = ?
-      WHERE id = ?
-    `).run(date, group_id, member_id, installment_number, amount, is_completed, id);
-
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Collection not found' });
-    }
-
-    const updatedCollection = db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id);
-    res.json(updatedCollection);
-  } catch (error) {
-    console.error('Error updating collection:', error);
-    res.status(500).json({ error: 'Failed to update collection' });
-  }
-});
-
-// Delete collection from a specific table
-router.delete('/:tableName/:id', (req, res) => {
-  try {
-    const { tableName, id } = req.params;
-    const result = db.prepare(`DELETE FROM ${tableName} WHERE id = ?`).run(id);
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Collection not found' });
-    }
-    res.status(204).send();
-  } catch (error) {
-    console.error('Error deleting collection:', error);
-    res.status(500).json({ error: 'Failed to delete collection' });
-  }
-});
-
-// Get collection balances for a group
-router.get('/balances/:groupId', (req, res) => {
-  try {
-    const { groupId } = req.params;
+    const { id } = req.params;
+    const { group_id, collection_amount } = req.body;
+    const db = getDb();
     
-    // Get the group name
-    const group = db.prepare('SELECT name FROM groups WHERE id = ?').get(groupId) as Group | undefined;
+    // Get group info with retry
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(group_id)
+    );
+    
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
 
-    // Get the balance table name
-    const cleanGroupName = group.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    const balanceTableName = `collection_balance_${groupId}_${cleanGroupName}`;
+    const tableName = GroupTableService.getTableName(group_id, group.name, 'collection');
+    const balanceTableName = GroupTableService.getTableName(group_id, group.name, 'collection_balance');
 
-    // Check if table exists
-    const tableExists = db.prepare(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name = ?
-    `).get(balanceTableName);
+    // Get the current collection with retry
+    const currentCollection = await withRetry(() => 
+      db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id)
+    );
 
-    if (!tableExists) {
-      return res.json([]); // Return empty array if table doesn't exist
+    if (!currentCollection) {
+      return res.status(404).json({ error: 'Collection not found' });
     }
 
+    // Calculate the difference in amount
+    const amountDifference = collection_amount - currentCollection.collection_amount;
+
+    await executeTransaction(db, () => {
+      // Update collection
+      db.prepare(`
+        UPDATE ${tableName} 
+        SET collection_amount = ?,
+            remaining_balance = remaining_balance + ?,
+            is_completed = remaining_balance + ? <= 0
+        WHERE id = ?
+      `).run(
+        collection_amount,
+        amountDifference,
+        amountDifference,
+        id
+      );
+
+      // Update collection balance
+      db.prepare(`
+        UPDATE ${balanceTableName}
+        SET total_paid = total_paid + ?,
+            remaining_balance = remaining_balance - ?,
+            is_completed = remaining_balance - ? <= 0,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE group_id = ? AND member_id = ? AND installment_number = ?
+      `).run(
+        amountDifference,
+        amountDifference,
+        amountDifference,
+        group_id,
+        currentCollection.member_id,
+        currentCollection.installment_number
+      );
+    });
+
+    res.json({ message: 'Collection updated successfully' });
+  } catch (error: any) {
+    console.error('Error updating collection:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete a collection
+router.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { group_id } = req.query;
+    const db = getDb();
+    
+    // Get group info with retry
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(group_id)
+    );
+    
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const tableName = GroupTableService.getTableName(group_id, group.name, 'collection');
+    const balanceTableName = GroupTableService.getTableName(group_id, group.name, 'collection_balance');
+
+    // Get the collection to be deleted with retry
+    const collection = await withRetry(() => 
+      db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id)
+    );
+
+    if (!collection) {
+      return res.status(404).json({ error: 'Collection not found' });
+    }
+
+    await executeTransaction(db, () => {
+      // Delete the collection
+      db.prepare(`DELETE FROM ${tableName} WHERE id = ?`).run(id);
+
+      // Update collection balance
+      db.prepare(`
+        UPDATE ${balanceTableName}
+        SET total_paid = total_paid - ?,
+            remaining_balance = remaining_balance + ?,
+            is_completed = false,
+            last_updated = CURRENT_TIMESTAMP
+        WHERE group_id = ? AND member_id = ? AND installment_number = ?
+      `).run(
+        collection.collection_amount,
+        collection.collection_amount,
+        group_id,
+        collection.member_id,
+        collection.installment_number
+      );
+    });
+
+    res.json({ message: 'Collection deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting collection:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get collection balances for a specific group table
+router.get('/:tableName/balances', async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const db = getDb();
+    
     const balances = db.prepare(`
       SELECT cb.*, m.name as member_name
-      FROM ${balanceTableName} cb
+      FROM ${tableName}_balance cb
       JOIN members m ON cb.member_id = m.id
-      WHERE cb.group_id = ?
       ORDER BY cb.member_id, cb.installment_number
-    `).all(groupId);
+    `).all();
+    
     res.json(balances);
   } catch (error) {
     console.error('Error fetching collection balances:', error);
     res.status(500).json({ error: 'Failed to fetch collection balances' });
+  }
+});
+
+// Create table for a new group
+router.post('/:tableName/create-table', async (req, res) => {
+  try {
+    const { tableName } = req.params;
+    const groupId = parseInt(tableName.split('_')[1]);
+    const groupName = tableName.split('_').slice(2).join('_');
+    
+    await GroupTableService.createGroupTables(groupId, groupName);
+    res.status(201).json({ message: 'Collection tables created successfully' });
+  } catch (error) {
+    console.error('Error creating collection tables:', error);
+    res.status(500).json({ error: 'Failed to create collection tables' });
   }
 });
 

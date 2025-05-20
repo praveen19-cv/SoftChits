@@ -16,15 +16,27 @@ const collectionsStore = useCollectionsStore()
 
 async function fetchStats() {
   try {
+    // First fetch members and groups
     await Promise.all([
       membersStore.fetchMembers(),
-      groupsStore.fetchGroups(),
-      collectionsStore.fetchCollections()
+      groupsStore.fetchGroups()
     ])
+
+    // Then fetch collections for each group
+    let totalCollections = 0
+    for (const group of groupsStore.groups) {
+      try {
+        const collections = await collectionsStore.fetchCollections(group.id)
+        totalCollections += collections.length
+      } catch (error) {
+        console.error(`Error fetching collections for group ${group.id}:`, error)
+      }
+    }
+
     stats.value = {
       totalMembers: membersStore.members.length,
       totalGroups: groupsStore.groups.length,
-      totalCollections: collectionsStore.collections.length
+      totalCollections
     }
   } catch (error) {
     console.error('Error fetching stats:', error)

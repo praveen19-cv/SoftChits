@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import { ref, onMounted, computed } from 'vue'
 import { useGroupsStore } from '@/stores/GroupsStore'
+import { useCollectionsStore } from '@/stores/CollectionsStore'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
 import { debounce } from 'lodash'
 
@@ -9,6 +10,7 @@ const props = defineProps<{
 }>()
 
 const store = useGroupsStore()
+const collectionsStore = useCollectionsStore()
 const loading = ref(false)
 const commissionPercentage = ref(4) // Default 4%
 const notification = ref({
@@ -23,6 +25,7 @@ interface MonthData {
   totalDividend: number
   distributedDividend: number
   monthlySubscription: number
+  isExported?: boolean
 }
 
 const months = ref<MonthData[]>([])
@@ -91,7 +94,7 @@ const showNotification = (message: string, type: 'success' | 'error' = 'success'
   }
 }
 
-// Load initial data
+// Modify loadData to check export status for valid months
 const loadData = async () => {
   try {
     loading.value = true;
@@ -235,7 +238,8 @@ const loadData = async () => {
         bidAmount: subscription?.bid_amount || 0,
         totalDividend: subscription?.total_dividend || 0,
         distributedDividend: subscription?.distributed_dividend || 0,
-        monthlySubscription: subscription?.monthly_subscription || 0
+        monthlySubscription: subscription?.monthly_subscription || 0,
+        isExported: false // Initialize as not exported
       };
     });
 
@@ -247,6 +251,18 @@ const loadData = async () => {
         calculateMonthValues(index);
       }
     });
+
+    // Check export status only for months that have dates
+    for (let i = 0; i < months.value.length; i++) {
+      if (months.value[i].date) {
+        try {
+          await checkExportStatus(i + 1);
+        } catch (error) {
+          console.warn(`Could not check export status for month ${i + 1}:`, error);
+          // Continue with other months even if one fails
+        }
+      }
+    }
   } catch (error: any) {
     console.error('Error loading data:', error);
     showNotification(error.message || 'Failed to load data', 'error');
@@ -254,6 +270,19 @@ const loadData = async () => {
     loading.value = false;
   }
 };
+
+// Modify checkExportStatus to handle errors gracefully
+const checkExportStatus = async (month: number) => {
+  try {
+    const isExported = await collectionsStore.getNextMonthStatus(props.groupId, month)
+    if (months.value[month - 1]) {
+      months.value[month - 1].isExported = isExported
+    }
+  } catch (error) {
+    console.warn(`Error checking export status for month ${month}:`, error)
+    // Don't throw error, just log it
+  }
+}
 
 // Save all monthly data
 const saveMonthlyData = async () => {
@@ -319,6 +348,40 @@ const saveFirstMonthSubscription = async () => {
     showNotification('Monthly subscription updated successfully')
   } catch (error: any) {
     showNotification(error.message || 'Failed to update monthly subscription', 'error')
+  } finally {
+    loading.value = false
+  }
+}
+
+// Modify export function to update status
+const exportMonthPayout = async (month: number) => {
+  try {
+    loading.value = true
+    await collectionsStore.exportMonthPayout(props.groupId, month)
+    // Wait a bit for the backend to process
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    // Check the status again
+    await checkExportStatus(month)
+    showNotification('Month payout exported successfully')
+  } catch (error: any) {
+    showNotification(error.message || 'Failed to export month payout', 'error')
+  } finally {
+    loading.value = false
+  }
+}
+
+// Modify reset function to update status
+const resetMonthPayout = async (month: number) => {
+  try {
+    loading.value = true
+    await collectionsStore.resetNextMonthPayout(props.groupId, month)
+    // Wait a bit for the backend to process
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    // Check the status again
+    await checkExportStatus(month)
+    showNotification('Month payout reset successfully')
+  } catch (error: any) {
+    showNotification(error.message || 'Failed to reset month payout', 'error')
   } finally {
     loading.value = false
   }
@@ -416,6 +479,25 @@ onMounted(loadData)
                   <span class="subscription-value">₹{{ month.monthlySubscription.toLocaleString() }}</span>
                 </div>
               </template>
+            </div>
+
+            <!-- Add Export and Reset buttons for all months -->
+            <div class="action-buttons">
+              <button 
+                class="export-button" 
+                :class="{ 'exported': month.isExported }"
+                @click="exportMonthPayout(index + 1)"
+                :disabled="loading || month.isExported"
+              >
+                {{ loading ? 'Exporting...' : month.isExported ? 'Exported' : 'Export' }}
+              </button>
+              <button 
+                class="reset-button" 
+                @click="resetMonthPayout(index + 1)"
+                :disabled="loading || !month.isExported"
+              >
+                {{ loading ? 'Resetting...' : 'Reset' }}
+              </button>
             </div>
           </div>
         </div>
@@ -556,6 +638,8 @@ onMounted(loadData)
   padding: 1.5rem;
   margin-left: 1rem;
   transition: transform 0.3s ease;
+  position: relative;
+  padding-bottom: 4rem; /* Add space for buttons */
 }
 
 .timeline-content:hover {
@@ -641,6 +725,63 @@ onMounted(loadData)
 .field span.subscription-value {
   font-size: 1.6rem;
   font-weight: 800;
+}
+
+.action-buttons {
+  position: absolute;
+  bottom: 1rem;
+  right: 1rem;
+  display: flex;
+  gap: 1rem;
+}
+
+.export-button {
+  padding: 0.5rem 1rem;
+  background-color: #2ecc71;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.export-button.exported {
+  background-color: #95a5a6;
+  cursor: default;
+}
+
+.export-button:hover:not(.exported) {
+  background-color: #27ae60;
+  transform: translateY(-1px);
+}
+
+.export-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.reset-button {
+  padding: 0.5rem 1rem;
+  background-color: #e74c3c;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.3s ease;
+}
+
+.reset-button:hover {
+  background-color: #c0392b;
+  transform: translateY(-1px);
+}
+
+.reset-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
 }
 
 @media (max-width: 768px) {

@@ -1,63 +1,68 @@
-import { getDb } from '../database/setup';
+import { getWriteDb } from '../database/setup';
 
 export class GroupTableService {
   static getTableName(groupId: number, groupName: string, tableType: string): string {
-    const cleanGroupName = groupName.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    return `${tableType}_${groupId}_${cleanGroupName}`;
+    const sanitizedName = groupName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    return `${tableType}_${groupId}_${sanitizedName}`;
   }
 
-  static async createGroupTables(groupId: number, groupName: string) {
-    const db = getDb();
+  static async createGroupTables(groupId: number, groupName: string): Promise<string[]> {
+    const db = getWriteDb();
+    const tables: string[] = [];
+
     try {
-      // Create collection table
-      const collectionTableName = this.getTableName(groupId, groupName, 'collection');
+      // Create collections table
+      const collectionsTableName = this.getTableName(groupId, groupName, 'collection');
       db.prepare(`
-        CREATE TABLE IF NOT EXISTS ${collectionTableName} (
+        CREATE TABLE IF NOT EXISTS ${collectionsTableName} (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          collection_date TEXT NOT NULL,
           group_id INTEGER NOT NULL,
           member_id INTEGER NOT NULL,
-          installment_number INTEGER NOT NULL,
-          collection_amount DECIMAL(10,2) NOT NULL,
-          remaining_balance DECIMAL(10,2) NOT NULL,
-          is_completed BOOLEAN DEFAULT FALSE,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+          amount REAL NOT NULL,
+          collection_date TEXT NOT NULL,
+          month_number INTEGER NOT NULL,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (group_id) REFERENCES groups(id),
           FOREIGN KEY (member_id) REFERENCES members(id)
         )
       `).run();
+      tables.push(collectionsTableName);
 
-      // Create collection balance table
-      const balanceTableName = this.getTableName(groupId, groupName, 'collection_balance');
+      // Create collection balances table
+      const collectionBalancesTableName = this.getTableName(groupId, groupName, 'collection_balance');
       db.prepare(`
-        CREATE TABLE IF NOT EXISTS ${balanceTableName} (
+        CREATE TABLE IF NOT EXISTS ${collectionBalancesTableName} (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           group_id INTEGER NOT NULL,
           member_id INTEGER NOT NULL,
           installment_number INTEGER NOT NULL,
-          total_paid DECIMAL(10,2) NOT NULL DEFAULT 0,
-          remaining_balance DECIMAL(10,2) NOT NULL,
-          is_completed BOOLEAN DEFAULT FALSE,
-          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+          total_paid REAL NOT NULL DEFAULT 0,
+          remaining_balance REAL NOT NULL DEFAULT 0,
+          is_completed BOOLEAN NOT NULL DEFAULT 0,
+          export_month INTEGER,
+          is_exported BOOLEAN NOT NULL DEFAULT 0,
+          last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (group_id) REFERENCES groups(id),
           FOREIGN KEY (member_id) REFERENCES members(id),
           UNIQUE(group_id, member_id, installment_number)
         )
       `).run();
+      tables.push(collectionBalancesTableName);
 
       // Create group members table
-      const membersTableName = this.getTableName(groupId, groupName, 'group_members');
+      const groupMembersTableName = this.getTableName(groupId, groupName, 'group_members');
       db.prepare(`
-        CREATE TABLE IF NOT EXISTS ${membersTableName} (
+        CREATE TABLE IF NOT EXISTS ${groupMembersTableName} (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           group_id INTEGER NOT NULL,
           member_id INTEGER NOT NULL,
           group_member_id TEXT NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (group_id) REFERENCES groups(id),
           FOREIGN KEY (member_id) REFERENCES members(id)
         )
       `).run();
+      tables.push(groupMembersTableName);
 
       // Create chit dates table
       const chitDatesTableName = this.getTableName(groupId, groupName, 'chit_dates');
@@ -67,15 +72,16 @@ export class GroupTableService {
           group_id INTEGER NOT NULL,
           chit_date TEXT NOT NULL,
           amount REAL NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (group_id) REFERENCES groups(id)
         )
       `).run();
+      tables.push(chitDatesTableName);
 
       // Create monthly subscriptions table
-      const subscriptionsTableName = this.getTableName(groupId, groupName, 'monthly_subscription');
+      const monthlySubscriptionsTableName = this.getTableName(groupId, groupName, 'monthly_subscription');
       db.prepare(`
-        CREATE TABLE IF NOT EXISTS ${subscriptionsTableName} (
+        CREATE TABLE IF NOT EXISTS ${monthlySubscriptionsTableName} (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           group_id INTEGER NOT NULL,
           month_number INTEGER NOT NULL,
@@ -83,36 +89,26 @@ export class GroupTableService {
           total_dividend REAL NOT NULL,
           distributed_dividend REAL NOT NULL,
           monthly_subscription REAL NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (group_id) REFERENCES groups(id)
         )
       `).run();
+      tables.push(monthlySubscriptionsTableName);
 
-      return {
-        collectionTable: collectionTableName,
-        balanceTable: balanceTableName,
-        membersTable: membersTableName,
-        chitDatesTable: chitDatesTableName,
-        subscriptionsTable: subscriptionsTableName
-      };
+      return tables;
     } catch (error) {
       console.error('Error creating group tables:', error);
       throw error;
     }
   }
 
-  static async deleteGroupTables(groupId: number, groupName: string) {
-    const db = getDb();
+  static async deleteGroupTables(groupId: number, groupName: string): Promise<void> {
+    const db = getWriteDb();
     try {
-      const tableNames = [
-        this.getTableName(groupId, groupName, 'collection'),
-        this.getTableName(groupId, groupName, 'collection_balance'),
-        this.getTableName(groupId, groupName, 'group_members'),
-        this.getTableName(groupId, groupName, 'chit_dates'),
-        this.getTableName(groupId, groupName, 'monthly_subscription')
-      ];
-
-      for (const tableName of tableNames) {
+      const tableTypes = ['collection', 'collection_balance', 'group_members', 'chit_dates', 'monthly_subscription'];
+      
+      for (const tableType of tableTypes) {
+        const tableName = this.getTableName(groupId, groupName, tableType);
         db.prepare(`DROP TABLE IF EXISTS ${tableName}`).run();
       }
     } catch (error) {

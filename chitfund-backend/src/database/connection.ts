@@ -1,66 +1,66 @@
 import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import { dbPath } from './config';
 
-class DatabaseConnection {
+export class DatabaseConnection {
   private static instance: DatabaseConnection;
-  private connections: Database[] = [];
-  private currentIndex = 0;
-  private readonly maxConnections = 10;
-  private readonly dataDir = path.join(process.cwd(), 'data');
+  private readPool: Database.Database[];
+  private writePool: Database.Database[];
+  private readIndex: number = 0;
+  private writeIndex: number = 0;
+  private readonly maxReadConnections: number = 20;  // More connections for reads
+  private readonly maxWriteConnections: number = 5;  // Fewer connections for writes
 
   private constructor() {
-    // Ensure data directory exists
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
-    }
+    this.readPool = [];
+    this.writePool = [];
+    this.initializePools();
+  }
 
-    // Initialize connection pool
-    for (let i = 0; i < this.maxConnections; i++) {
-      const db = new Database(path.join(this.dataDir, 'chitfund.db'), {
+  private initializePools() {
+    // Initialize read connections
+    for (let i = 0; i < this.maxReadConnections; i++) {
+      const db = new Database(dbPath, {
         verbose: console.log,
-        // Enable WAL mode for better concurrency
         fileMustExist: false,
-        // Increase busy timeout to 10 seconds
-        busyTimeout: 10000,
-        // Configure for maximum concurrency
-        pragma: {
-          journal_mode: 'WAL',
-          synchronous: 'NORMAL',
-          temp_store: 'MEMORY',
-          mmap_size: 30000000000,
-          page_size: 4096,
-          cache_size: -2000,
-          foreign_keys: 'ON',
-          // Add these pragmas for better concurrency
-          locking_mode: 'NORMAL',
-          busy_timeout: 10000,
-          // Optimize for concurrent access
-          wal_autocheckpoint: 1000,
-          journal_size_limit: 1000000,
-          // Cache more pages in memory
-          cache_spill: 0,
-          // Use memory-mapped I/O
-          mmap_size: 30000000000
-        }
+        readonly: true  // Read-only connections
       });
 
-      // Configure each connection
+      // Configure read connections
       db.pragma('journal_mode = WAL');
       db.pragma('synchronous = NORMAL');
       db.pragma('temp_store = MEMORY');
       db.pragma('mmap_size = 30000000000');
       db.pragma('page_size = 4096');
       db.pragma('cache_size = -2000');
+      db.pragma('busy_timeout = 30000');
       db.pragma('foreign_keys = ON');
       db.pragma('locking_mode = NORMAL');
-      db.pragma('busy_timeout = 10000');
-      db.pragma('wal_autocheckpoint = 1000');
-      db.pragma('journal_size_limit = 1000000');
-      db.pragma('cache_spill = 0');
-      db.pragma('mmap_size = 30000000000');
+      db.pragma('query_only = ON');  // Ensure read-only mode
 
-      this.connections.push(db);
+      this.readPool.push(db);
+    }
+
+    // Initialize write connections
+    for (let i = 0; i < this.maxWriteConnections; i++) {
+      const db = new Database(dbPath, {
+        verbose: console.log,
+        fileMustExist: false
+      });
+
+      // Configure write connections
+      db.pragma('journal_mode = WAL');
+      db.pragma('synchronous = NORMAL');
+      db.pragma('temp_store = MEMORY');
+      db.pragma('mmap_size = 30000000000');
+      db.pragma('page_size = 4096');
+      db.pragma('cache_size = -2000');
+      db.pragma('busy_timeout = 30000');
+      db.pragma('foreign_keys = ON');
+      db.pragma('locking_mode = NORMAL');
+      db.pragma('wal_autocheckpoint = 1000');  // Checkpoint WAL every 1000 pages
+      db.pragma('journal_size_limit = 1000000');  // Limit WAL size
+
+      this.writePool.push(db);
     }
   }
 
@@ -71,22 +71,40 @@ class DatabaseConnection {
     return DatabaseConnection.instance;
   }
 
-  public getConnection(): Database {
-    // Round-robin connection selection
-    const connection = this.connections[this.currentIndex];
-    this.currentIndex = (this.currentIndex + 1) % this.maxConnections;
+  public getReadConnection(): Database.Database {
+    // Round-robin connection selection for reads
+    const connection = this.readPool[this.readIndex];
+    this.readIndex = (this.readIndex + 1) % this.maxReadConnections;
     return connection;
   }
 
-  public closeAll(): void {
-    for (const connection of this.connections) {
+  public getWriteConnection(): Database.Database {
+    // Round-robin connection selection for writes
+    const connection = this.writePool[this.writeIndex];
+    this.writeIndex = (this.writeIndex + 1) % this.maxWriteConnections;
+    return connection;
+  }
+
+  public closeAllConnections() {
+    // Close read connections
+    for (const db of this.readPool) {
       try {
-        connection.close();
+        db.close();
       } catch (error) {
-        console.error('Error closing database connection:', error);
+        console.error('Error closing read connection:', error);
       }
     }
-    this.connections = [];
+    this.readPool = [];
+
+    // Close write connections
+    for (const db of this.writePool) {
+      try {
+        db.close();
+      } catch (error) {
+        console.error('Error closing write connection:', error);
+      }
+    }
+    this.writePool = [];
   }
 }
 

@@ -1,5 +1,5 @@
 import express from 'express';
-import { getDb } from '../database/setup';
+import { getReadDb, getWriteDb } from '../database/setup';
 
 const router = express.Router();
 
@@ -25,11 +25,9 @@ async function withRetry<T>(operation: () => T, maxRetries = 5): Promise<T> {
 
 // Get all members
 router.get('/', async (req, res) => {
-  const db = getDb();
+  const db = getReadDb();
   try {
-    const members = await withRetry(() => 
-      db.prepare('SELECT * FROM members ORDER BY name').all()
-    );
+    const members = db.prepare('SELECT * FROM members').all();
     res.json(members);
   } catch (error) {
     console.error('Error fetching members:', error);
@@ -39,11 +37,9 @@ router.get('/', async (req, res) => {
 
 // Get member by ID
 router.get('/:id', async (req, res) => {
-  const db = getDb();
+  const db = getReadDb();
   try {
-    const member = await withRetry(() => 
-      db.prepare('SELECT * FROM members WHERE id = ?').get(Number(req.params.id))
-    );
+    const member = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
     }
@@ -56,21 +52,16 @@ router.get('/:id', async (req, res) => {
 
 // Create new member
 router.post('/', async (req, res) => {
-  const db = getDb();
+  const db = getWriteDb();
   try {
-    const { name, phone, address, email, status = 'active' } = req.body;
-    const now = new Date().toISOString();
+    const { name, phone, email, address } = req.body;
     
-    const result = await withRetry(() => 
-      db.prepare(`
-        INSERT INTO members (name, phone, address, email, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(name, phone, address, email, status, now, now)
-    );
+    const result = db.prepare(`
+      INSERT INTO members (name, phone, email, address)
+      VALUES (?, ?, ?, ?)
+    `).run(name, phone, email, address);
 
-    const newMember = await withRetry(() => 
-      db.prepare('SELECT * FROM members WHERE id = ?').get(result.lastInsertRowid)
-    );
+    const newMember = db.prepare('SELECT * FROM members WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json(newMember);
   } catch (error) {
     console.error('Error creating member:', error);
@@ -80,35 +71,21 @@ router.post('/', async (req, res) => {
 
 // Update member
 router.put('/:id', async (req, res) => {
-  const db = getDb();
+  const db = getWriteDb();
   try {
-    const { name, phone, address, email, status } = req.body;
-    const member = await withRetry(() => 
-      db.prepare('SELECT * FROM members WHERE id = ?').get(Number(req.params.id))
-    );
+    const { name, phone, email, address } = req.body;
     
-    if (!member) {
+    const result = db.prepare(`
+      UPDATE members
+      SET name = ?, phone = ?, email = ?, address = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(name, phone, email, address, req.params.id);
+
+    if (result.changes === 0) {
       return res.status(404).json({ error: 'Member not found' });
     }
 
-    const updates = [];
-    const values = [];
-    if (name) { updates.push('name = ?'); values.push(name); }
-    if (phone) { updates.push('phone = ?'); values.push(phone); }
-    if (address) { updates.push('address = ?'); values.push(address); }
-    if (email) { updates.push('email = ?'); values.push(email); }
-    if (status) { updates.push('status = ?'); values.push(status); }
-    
-    updates.push('updated_at = ?');
-    values.push(new Date().toISOString());
-    values.push(Number(req.params.id));
-
-    const query = `UPDATE members SET ${updates.join(', ')} WHERE id = ?`;
-    await withRetry(() => db.prepare(query).run(...values));
-
-    const updatedMember = await withRetry(() => 
-      db.prepare('SELECT * FROM members WHERE id = ?').get(Number(req.params.id))
-    );
+    const updatedMember = db.prepare('SELECT * FROM members WHERE id = ?').get(req.params.id);
     res.json(updatedMember);
   } catch (error) {
     console.error('Error updating member:', error);
@@ -118,19 +95,15 @@ router.put('/:id', async (req, res) => {
 
 // Delete member
 router.delete('/:id', async (req, res) => {
-  const db = getDb();
+  const db = getWriteDb();
   try {
-    const member = await withRetry(() => 
-      db.prepare('SELECT * FROM members WHERE id = ?').get(Number(req.params.id))
-    );
-    if (!member) {
+    const result = db.prepare('DELETE FROM members WHERE id = ?').run(req.params.id);
+    
+    if (result.changes === 0) {
       return res.status(404).json({ error: 'Member not found' });
     }
-
-    await withRetry(() => 
-      db.prepare('DELETE FROM members WHERE id = ?').run(Number(req.params.id))
-    );
-    res.json({ message: 'Member deleted successfully' });
+    
+    res.status(204).send();
   } catch (error) {
     console.error('Error deleting member:', error);
     res.status(500).json({ error: 'Failed to delete member' });

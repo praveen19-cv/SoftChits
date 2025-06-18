@@ -120,11 +120,19 @@ export const useCollectionsStore = defineStore('collections', () => {
         await groupsStore.fetchGroups();
       }
 
-      const tableName = await getTableName(collection.group_id);
+      // Convert the collection data to match backend format
+      const collectionData = {
+        group_id: collection.group_id,
+        member_id: collection.member_id,
+        installment_number: parseInt(collection.installment_string),
+        collection_amount: collection.amount,
+        collection_date: collection.date
+      };
+
       // First, ensure the table exists
       await api.post(`/collections/${collection.group_id}/create-table`);
       // Then create the collection
-      const response = await api.post(`/collections`, collection);
+      const response = await api.post(`/collections`, collectionData);
       if (response.data) {
         collections.value.push(response.data);
       }
@@ -253,6 +261,66 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
+  async function exportNextMonthPayout(groupId: number, month: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      const response = await api.post(`/collections/group/${groupId}/export-next-month`, { month });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error exporting next month payout:', error);
+      throw new Error(error.response?.data?.error || 'Failed to export next month payout');
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function resetNextMonthPayout(groupId: number, month: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      const response = await api.post(`/collections/group/${groupId}/reset-next-month`, { month });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error resetting next month payout:', error);
+      throw new Error(error.response?.data?.error || 'Failed to reset next month payout');
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function getNextMonthStatus(groupId: number, month: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      const response = await api.get(`/collections/group/${groupId}/next-month-status/${month}`);
+      return response.data.isExported;
+    } catch (error: any) {
+      console.error('Error checking next month status:', error);
+      throw new Error(error.response?.data?.error || 'Failed to check next month status');
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function exportMonthPayout(groupId: number, month: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      const response = await api.post(`/collections/group/${groupId}/export-month/${month}`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Error exporting month payout:', error);
+      throw new Error(error.response?.data?.error || 'Failed to export month payout');
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     collections,
     collectionBalances,
@@ -265,6 +333,10 @@ export const useCollectionsStore = defineStore('collections', () => {
     updateCollection,
     deleteCollection,
     fetchCollectionsByGroup,
-    fetchCollectionBalances
+    fetchCollectionBalances,
+    exportNextMonthPayout,
+    resetNextMonthPayout,
+    getNextMonthStatus,
+    exportMonthPayout
   };
 }); 

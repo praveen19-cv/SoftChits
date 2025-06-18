@@ -1,25 +1,65 @@
 import { dbPool } from './connection';
 import Database from 'better-sqlite3';
 
+// Transaction queue to handle concurrent access
+let transactionQueue: Promise<any> = Promise.resolve();
+
+// Configure database with busy handler
+function configureDatabase(db: Database.Database) {
+  // Set busy timeout to 30 seconds
+  db.pragma('busy_timeout = 30000');
+  
+  // Enable WAL mode for better concurrency
+  db.pragma('journal_mode = WAL');
+  
+  // Set synchronous mode to NORMAL for better performance
+  db.pragma('synchronous = NORMAL');
+  
+  // Set temp store to memory
+  db.pragma('temp_store = MEMORY');
+}
+
+// Execute transaction with queue and retry
+export async function executeTransaction<T>(db: Database.Database, transactionFn: () => T): Promise<T> {
+  const maxRetries = 5;
+  const baseDelay = 100; // ms
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      // Set busy timeout
+      db.pragma('busy_timeout = 30000');
+      
+      // Begin transaction with immediate lock
+      db.prepare('BEGIN IMMEDIATE').run();
+      
+      try {
+        const result = transactionFn();
+        db.prepare('COMMIT').run();
+        return result;
+      } catch (error) {
+        db.prepare('ROLLBACK').run();
+        throw error;
+      }
+    } catch (error: any) {
+      if (error.code === 'SQLITE_BUSY' && i < maxRetries - 1) {
+        // Exponential backoff with jitter
+        const delay = baseDelay * Math.pow(2, i) * (0.5 + Math.random());
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('Max retries exceeded');
+}
+
 // Initialize database
 export async function initializeDatabase() {
+  const db = dbPool.getWriteConnection();
+  
   try {
-    // Get a connection from the pool
-    const db = dbPool.getConnection();
-    
-    // Create tables if they don't exist
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS members (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        phone TEXT,
-        address TEXT,
-        email TEXT,
-        status TEXT,
-        created_at TEXT,
-        updated_at TEXT
-      );
-
+    // Create groups table
+    db.prepare(`
       CREATE TABLE IF NOT EXISTS groups (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -27,65 +67,51 @@ export async function initializeDatabase() {
         member_count INTEGER NOT NULL,
         start_date TEXT NOT NULL,
         end_date TEXT NOT NULL,
-        status TEXT NOT NULL,
-        number_of_months INTEGER NOT NULL,
-        commission_percentage REAL,
-        created_at TEXT,
-        updated_at TEXT
-      );
+        commission_percentage REAL DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
 
-      CREATE TABLE IF NOT EXISTS group_members (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id INTEGER NOT NULL,
-        member_id INTEGER NOT NULL,
-        group_member_id TEXT NOT NULL,
-        created_at TEXT,
-        FOREIGN KEY (group_id) REFERENCES groups(id),
-        FOREIGN KEY (member_id) REFERENCES members(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS collections (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id INTEGER NOT NULL,
-        member_id INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        collection_date TEXT NOT NULL,
-        month_number INTEGER NOT NULL,
-        created_at TEXT,
-        FOREIGN KEY (group_id) REFERENCES groups(id),
-        FOREIGN KEY (member_id) REFERENCES members(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS chit_dates (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id INTEGER NOT NULL,
-        chit_date TEXT NOT NULL,
-        amount REAL NOT NULL,
-        created_at TEXT,
-        FOREIGN KEY (group_id) REFERENCES groups(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS monthly_subscriptions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id INTEGER NOT NULL,
-        month_number INTEGER NOT NULL,
-        bid_amount REAL NOT NULL,
-        total_dividend REAL NOT NULL,
-        distributed_dividend REAL NOT NULL,
-        monthly_subscription REAL NOT NULL,
-        created_at TEXT,
-        FOREIGN KEY (group_id) REFERENCES groups(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS users (
+    // Create members table
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS members (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE,
+        phone TEXT,
+        email TEXT,
+        address TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    // Create users table
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
         password TEXT NOT NULL,
         role TEXT NOT NULL,
-        created_at TEXT
-      );
-    `);
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `).run();
+
+    // Create audit_logs table
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        action TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        record_id INTEGER,
+        old_values TEXT,
+        new_values TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )
+    `).run();
 
     console.log('Database initialized successfully');
   } catch (error) {
@@ -166,7 +192,15 @@ export interface User {
   created_at?: string;
 }
 
-// Export a function to get a database connection
-export function getDb(): Database {
-  return dbPool.getConnection();
+// Export functions to get database connections
+export function getReadDb() {
+  const db = dbPool.getReadConnection();
+  configureDatabase(db);
+  return db;
+}
+
+export function getWriteDb() {
+  const db = dbPool.getWriteConnection();
+  configureDatabase(db);
+  return db;
 }

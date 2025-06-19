@@ -51,7 +51,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     if (!group) {
       try {
         await groupsStore.fetchGroupById(groupId);
-        group = groupsStore.currentGroup;
+        group = groupsStore.currentGroup ?? undefined;
       } catch (err) {
         console.error('Error fetching group:', err);
         throw new Error('Group not found');
@@ -162,7 +162,10 @@ export const useCollectionsStore = defineStore('collections', () => {
       }
 
       const tableName = await getTableName(collection.group_id);
-      const response = await api.put(`/collections/${id}`, collection);
+      const response = await api.put(`/collections/${id}`, {
+        ...collection,
+        collection_amount: collection.amount // Map amount to collection_amount for backend
+      });
       const index = collections.value.findIndex(c => c.id === id);
       if (index !== -1) {
         collections.value[index] = response.data;
@@ -339,4 +342,4 @@ export const useCollectionsStore = defineStore('collections', () => {
     getNextMonthStatus,
     exportMonthPayout
   };
-}); 
+});

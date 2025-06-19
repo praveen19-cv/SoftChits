@@ -119,6 +119,8 @@ async function loadExistingCollections() {
     collectionSheet.value = collectionSheet.value.map(row => {
       const memberCollections = existingCollections.filter(c => c.member_id === row.memberId);
       if (memberCollections.length > 0) {
+        // Use the first collection's id for update
+        const firstCollection = memberCollections[0];
         // Combine all installments for this member
         const installmentString = memberCollections
           .map(c => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
@@ -138,6 +140,7 @@ async function loadExistingCollections() {
         // Set the row with previous data, user can edit
         return {
           ...row,
+          id: firstCollection.id, // Track id for update
           installment: installmentString,
           amount: totalAmount.toString(),
           installmentBalances
@@ -382,35 +385,52 @@ async function handleSubmit() {
     // Only submit rows with both a valid member and a valid amount
     const collections = collectionSheet.value
       .filter(row => row.memberId && row.amount && !isNaN(parseFloat(row.amount)) && row.installment)
-      .map(row => {
-        const amount = parseFloat(row.amount);
-        let installment_number = 1;
-        if (row.installment) {
-          const first = row.installment.split(',')[0];
-          installment_number = parseInt(first);
-        }
-        return {
-          date: collection.value.date,
-          group_id: Number(collection.value.group_id),
-          member_id: row.memberId,
-          installment_number: installment_number,
-          collection_amount: amount,
-          installment_string: row.installment,
-          amount: amount
-        };
-      }) as Omit<Collection, 'id'>[]
     if (collections.length === 0) {
       showErrorNotification('Please enter at least one amount to save collections.');
       return;
     }
     // Debug log
     console.log('Submitting collections:', collections);
-    // Create collections one by one
-    for (const collection of collections) {
-      await collectionsStore.createCollection(collection)
+    // Create or update collections one by one
+    for (const row of collections) {
+      const amount = parseFloat(row.amount);
+      let installment_number = 1;
+      if (row.installment) {
+        const first = row.installment.split(',')[0];
+        installment_number = parseInt(first);
+      }
+      if (row.id) {
+        // Fetch all old collections for this member/date/group
+        const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
+          collection.value.date,
+          Number(collection.value.group_id)
+        );
+        // Filter for this member
+        const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
+        // Delete all old collections for this member/date/group
+        for (const old of memberOldCollections) {
+          await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
+        }
+        // Create new collection (will split amount across installments)
+        await collectionsStore.createCollection({
+          date: collection.value.date,
+          group_id: Number(collection.value.group_id),
+          member_id: row.memberId,
+          installment_string: row.installment,
+          amount: amount
+        });
+      } else {
+        // Create new collection
+        await collectionsStore.createCollection({
+          date: collection.value.date,
+          group_id: Number(collection.value.group_id),
+          member_id: row.memberId,
+          installment_string: row.installment,
+          amount: amount
+        });
+      }
     }
-    
-    ('Collections saved successfully!')
+    showSuccessNotification('Collections saved successfully!');
     // Wait before resetting form so notification is visible
     setTimeout(() => {
       collection.value.date = ''
@@ -418,8 +438,8 @@ async function handleSubmit() {
       collectionSheet.value = []
     }, 1500);
   } catch (error: any) {
-    console.error('Error creating collections:', error)
-    errorMessage.value = error.response?.data?.message || error.message || 'Failed to create collections'
+    console.error('Error creating/updating collections:', error)
+    errorMessage.value = error.response?.data?.message || error.message || 'Failed to create/update collections'
     showErrorNotification(errorMessage.value)
   }
 }

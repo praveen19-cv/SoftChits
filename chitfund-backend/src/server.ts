@@ -6,6 +6,7 @@ import memberRoutes from './routes/members';
 import groupRoutes from './routes/groups';
 import collectionRoutes from './routes/collections';
 import authRoutes from './routes/auth';
+import collectionBalanceRoutes from './routes/collection_balance';
 
 dotenv.config();
 
@@ -27,6 +28,7 @@ app.use('/api/members', memberRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/collections', collectionRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/collection-balance', collectionBalanceRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -50,4 +52,4 @@ async function startServer() {
   }
 }
 
-startServer(); 
+startServer();

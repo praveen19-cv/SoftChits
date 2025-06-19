@@ -64,7 +64,7 @@ const errorMessage = ref('')
 const showPrompt = ref(false)
 const promptMessage = ref('')
 
-// Replace notification state with standard notification
+// Notification state
 const showNotification = ref(false)
 const notificationMessage = ref('')
 const notificationType = ref<'success' | 'error'>('success')
@@ -83,26 +83,26 @@ function showErrorNotification(message: string) {
 
 async function loadGroupsAndMembers() {
   try {
-  await Promise.all([
-    groupsStore.fetchGroups(),
-    membersStore.fetchMembers()
-  ])
+    await Promise.all([
+      groupsStore.fetchGroups(),
+      membersStore.fetchMembers()
+    ])
     groups.value = groupsStore.groups as Group[]
     members.value = membersStore.members as Member[]
   } catch (error) {
     console.error('Error loading data:', error)
-    errorMessage.value = 'Failed to load groups and members'
+    showErrorNotification('Failed to load groups and members')
   }
 }
 
 function validateDate(group: Group) {
   if (!collection.value.date || !group) return false
-  
+
   const selectedDate = new Date(collection.value.date)
   const groupStartDate = new Date(group.start_date)
   const oneMonthBefore = new Date(groupStartDate)
   oneMonthBefore.setMonth(oneMonthBefore.getMonth() - 1)
-  
+
   return selectedDate >= oneMonthBefore
 }
 
@@ -115,19 +115,14 @@ async function loadExistingCollections() {
       Number(collection.value.group_id)
     ) as ExistingCollection[];
 
-    // Update collection sheet with existing data
     collectionSheet.value = collectionSheet.value.map(row => {
       const memberCollections = existingCollections.filter(c => c.member_id === row.memberId);
       if (memberCollections.length > 0) {
-        // Use the first collection's id for update
         const firstCollection = memberCollections[0];
-        // Combine all installments for this member
         const installmentString = memberCollections
           .map(c => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
           .join(',');
-        // Calculate total amount
         const totalAmount = memberCollections.reduce((sum: number, c: ExistingCollection) => sum + c.collection_amount, 0);
-        // Calculate installment balances
         const installmentBalances: { [key: number]: number } = {};
         const monthlySubscription = calculateMonthlySubscription();
         memberCollections.forEach((c: ExistingCollection) => {
@@ -137,10 +132,9 @@ async function loadExistingCollections() {
             installmentBalances[c.installment_number] = monthlySubscription - c.collection_amount;
           }
         });
-        // Set the row with previous data, user can edit
         return {
           ...row,
-          id: firstCollection.id, // Track id for update
+          id: firstCollection.id,
           installment: installmentString,
           amount: totalAmount.toString(),
           installmentBalances
@@ -154,12 +148,11 @@ async function loadExistingCollections() {
   }
 }
 
-// Add function to get previous collections
 async function getPreviousCollections(memberId: number): Promise<ExistingCollection[]> {
   try {
     const allCollections = await collectionsStore.fetchCollectionsByGroup(Number(collection.value.group_id));
-    return allCollections.filter(c => 
-      c.member_id === memberId && 
+    return allCollections.filter(c =>
+      c.member_id === memberId &&
       new Date(c.collection_date) < new Date(collection.value.date)
     );
   } catch (error) {
@@ -168,24 +161,21 @@ async function getPreviousCollections(memberId: number): Promise<ExistingCollect
   }
 }
 
-// Update handleGroupChange to load previous collections
 async function handleGroupChange() {
   const group = groups.value.find(g => g.id === Number(collection.value.group_id))
-  
+
   if (!group) {
     return
   }
-  
+
   selectedGroup.value = group
-  
-  // Validate date
+
   if (!validateDate(group)) {
-    errorMessage.value = 'Selected date must be from one month before group start date'
+    showErrorNotification('Selected date must be from one month before group start date')
     return
   }
   errorMessage.value = ''
-  
-  // Initialize collection sheet with all members
+
   collectionSheet.value = members.value.map((member, index) => ({
     serialNo: index + 1,
     memberId: Number(member.id),
@@ -195,7 +185,6 @@ async function handleGroupChange() {
     installmentBalances: {}
   }))
 
-  // Load collection balances
   try {
     collectionBalances.value = await collectionsStore.fetchCollectionBalances(Number(collection.value.group_id))
   } catch (error) {
@@ -203,7 +192,6 @@ async function handleGroupChange() {
     showErrorNotification('Failed to load collection balances')
   }
 
-  // Load existing collections if date is selected
   if (collection.value.date) {
     await loadExistingCollections();
   }
@@ -222,36 +210,29 @@ function getTotalPaidForMember(memberId: number): number {
 
 function handleInstallmentChange(row: CollectionSheetRow) {
   if (!row.installment || !selectedGroup.value) return
-  
+
   const monthlySubscription = calculateMonthlySubscription();
   const amount = parseFloat(row.amount) || 0;
-  
-  // Parse installment string (e.g., "1c,2")
+
   const installments = row.installment.split(',').map(inst => {
     const isCompleted = inst.endsWith('c');
     const number = parseInt(inst.replace('c', ''));
     return { number, isCompleted };
   });
 
-  // Sort installments by number
   installments.sort((a, b) => a.number - b.number);
 
-  // Calculate installment balances
   row.installmentBalances = {};
   let remainingAmount = amount;
 
   for (const inst of installments) {
     if (inst.isCompleted) {
-      // For completed installments, balance is 0
       row.installmentBalances[inst.number] = 0;
     } else {
-      // For incomplete installments, calculate remaining balance
       if (remainingAmount >= monthlySubscription) {
-        // If amount is enough for this installment
         row.installmentBalances[inst.number] = 0;
         remainingAmount -= monthlySubscription;
       } else {
-        // If amount is not enough, show remaining balance
         row.installmentBalances[inst.number] = monthlySubscription - remainingAmount;
         remainingAmount = 0;
       }
@@ -263,40 +244,32 @@ function isMonthlySubscriptionComplete(row: CollectionSheetRow): boolean {
   if (!selectedGroup.value || !row.amount) return false;
   const monthlySubscription = calculateMonthlySubscription();
   const amount = parseFloat(row.amount) || 0;
-  
-  // Parse installment string
+
   const installments = row.installment.split(',').map(inst => {
     const isCompleted = inst.endsWith('c');
     const number = parseInt(inst.replace('c', ''));
     return { number, isCompleted };
   });
 
-  // Check if any incomplete installment has enough payment
   return installments.some(inst => !inst.isCompleted && amount >= monthlySubscription);
 }
 
-// Add function to handle amount changes
 async function handleAmountChange(row: CollectionSheetRow) {
   if (!row.amount || !selectedGroup.value) return;
-  
+
   const amount = parseFloat(row.amount);
   const monthlySubscription = calculateMonthlySubscription();
-  
-  // Get previous collections
+
   const previousCollections = await getPreviousCollections(row.memberId);
-  
-  // Calculate total paid in previous collections
+
   const totalPaid = previousCollections.reduce((sum, c) => sum + c.collection_amount, 0);
-  
-  // Calculate remaining installments
+
   const completedInstallments = Math.floor(totalPaid / monthlySubscription);
   const currentAmount = totalPaid % monthlySubscription;
-  
-  // Calculate how many installments can be completed with current amount
+
   const totalAmount = currentAmount + amount;
   const newCompletedInstallments = Math.floor(totalAmount / monthlySubscription);
-  
-  // Update installment string
+
   const installments = [];
   for (let i = 1; i <= completedInstallments; i++) {
     installments.push(`${i}c`);
@@ -307,21 +280,17 @@ async function handleAmountChange(row: CollectionSheetRow) {
   if (totalAmount % monthlySubscription > 0) {
     installments.push(`${completedInstallments + newCompletedInstallments + 1}`);
   }
-  
+
   row.installment = installments.join(',');
-  
-  // Update balances
+
   handleInstallmentChange(row);
   calculateUpdatedInstallmentBalances(row);
 }
 
-// Helper to get current and previous installment numbers for a member
 function getCurrentAndPreviousInstallments(memberBalances: CollectionBalance[]): number[] {
   if (!memberBalances.length) return [];
-  // Find the first installment with a non-zero balance (current)
   const currentIdx = memberBalances.findIndex(b => b.remaining_balance > 0);
   if (currentIdx === -1) {
-    // All paid, show last two
     return [memberBalances.length - 2, memberBalances.length - 1].filter(i => i >= 0).map(i => memberBalances[i].installment_number);
   }
   const prevIdx = currentIdx - 1;
@@ -331,17 +300,14 @@ function getCurrentAndPreviousInstallments(memberBalances: CollectionBalance[]):
 }
 
 function calculateUpdatedInstallmentBalances(row: CollectionSheetRow) {
-  // Get all balances for this member from collectionBalances
   const memberBalances = collectionBalances.value
     .filter(b => b.member_id === row.memberId)
     .sort((a, b) => a.installment_number - b.installment_number);
   let amount = parseFloat(row.amount) || 0;
   const updatedBalances: { [key: number]: { old: number, updated: number } } = {};
 
-  // Always show current and previous installment from backend
   let installmentsToShow: number[] = [];
   if (row.installment) {
-    // If user entered specific installments, use those and always add previous
     const entered = row.installment.split(',').map(inst => parseInt(inst)).filter(n => !isNaN(n));
     if (entered.length > 0) {
       const prev = Math.max(1, Math.min(...entered) - 1);
@@ -350,14 +316,12 @@ function calculateUpdatedInstallmentBalances(row: CollectionSheetRow) {
     }
   }
   if (!installmentsToShow.length) {
-    // Otherwise, show current and previous from backend
     installmentsToShow = getCurrentAndPreviousInstallments(memberBalances);
   }
 
-  // Always use backend remaining_balance as old, and calculate new
   for (const bal of memberBalances) {
     if (!installmentsToShow.includes(bal.installment_number)) continue;
-    const oldBal = bal.remaining_balance; // always from backend
+    const oldBal = bal.remaining_balance;
     let updatedBal = oldBal;
     if (amount > 0) {
       if (amount >= oldBal) {
@@ -375,23 +339,17 @@ function calculateUpdatedInstallmentBalances(row: CollectionSheetRow) {
 
 async function handleSubmit() {
   try {
-    errorMessage.value = ''
-    // Only validate required fields, allow empty member/amount rows
+    errorMessage.value = '';
     if (!collection.value.date || !collection.value.group_id) {
-      errorMessage.value = 'Please fill in all required fields';
-      showErrorNotification(errorMessage.value);
+      showErrorNotification('Please fill in all required fields');
       return;
     }
-    // Only submit rows with both a valid member and a valid amount
     const collections = collectionSheet.value
-      .filter(row => row.memberId && row.amount && !isNaN(parseFloat(row.amount)) && row.installment)
+      .filter(row => row.memberId && row.amount && !isNaN(parseFloat(row.amount)) && row.installment);
     if (collections.length === 0) {
       showErrorNotification('Please enter at least one amount to save collections.');
       return;
     }
-    // Debug log
-    console.log('Submitting collections:', collections);
-    // Create or update collections one by one
     for (const row of collections) {
       const amount = parseFloat(row.amount);
       let installment_number = 1;
@@ -400,18 +358,14 @@ async function handleSubmit() {
         installment_number = parseInt(first);
       }
       if (row.id) {
-        // Fetch all old collections for this member/date/group
         const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
           collection.value.date,
           Number(collection.value.group_id)
         );
-        // Filter for this member
         const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
-        // Delete all old collections for this member/date/group
         for (const old of memberOldCollections) {
           await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
         }
-        // Create new collection (will split amount across installments)
         await collectionsStore.createCollection({
           date: collection.value.date,
           group_id: Number(collection.value.group_id),
@@ -420,7 +374,6 @@ async function handleSubmit() {
           amount: amount
         });
       } else {
-        // Create new collection
         await collectionsStore.createCollection({
           date: collection.value.date,
           group_id: Number(collection.value.group_id),
@@ -431,44 +384,39 @@ async function handleSubmit() {
       }
     }
     showSuccessNotification('Collections saved successfully!');
-    // Wait before resetting form so notification is visible
     setTimeout(() => {
-      collection.value.date = ''
-      collection.value.group_id = ''
-      collectionSheet.value = []
+      collection.value.date = '';
+      collection.value.group_id = '';
+      collectionSheet.value = [];
     }, 1500);
   } catch (error: any) {
-    console.error('Error creating/updating collections:', error)
-    errorMessage.value = error.response?.data?.message || error.message || 'Failed to create/update collections'
-    showErrorNotification(errorMessage.value)
+    console.error('Error creating/updating collections:', error);
+    showErrorNotification(error.response?.data?.message || error.message || 'Failed to create/update collections');
   }
 }
 
 function validateForm() {
   if (!collection.value.date || !collection.value.group_id || collectionSheet.value.length === 0) {
-    errorMessage.value = 'Please fill in all required fields';
+    showErrorNotification('Please fill in all required fields');
     return false;
   }
-  
-  // Validate all amounts are valid numbers
+
   const invalidRows = collectionSheet.value
     .filter(row => row.amount && isNaN(parseFloat(row.amount)));
-    
+
   if (invalidRows.length > 0) {
-    errorMessage.value = 'Please enter valid amounts for all members';
+    showErrorNotification('Please enter valid amounts for all members');
     return false;
   }
-  
+
   return true;
 }
 
-// Add watcher for date and group changes to always load previous data
 watch([
   () => collection.value.date,
   () => collection.value.group_id
 ], async ([newDate, newGroupId]) => {
   if (newDate && newGroupId) {
-    // Clear previous data to avoid caching issues
     collectionSheet.value = members.value.map((member, index) => ({
       serialNo: index + 1,
       memberId: Number(member.id),

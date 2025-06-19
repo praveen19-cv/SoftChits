@@ -5,7 +5,9 @@ import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import { useMembersStore } from '@/stores/MembersStore'
 import type { Collection, CollectionBalance } from '@/stores/CollectionsStore'
+import type { CollectionSheetRow } from './CollectionSheetRow.ts'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import CollectionSheetTable from './CollectionSheetTable.vue'
 
 interface Group {
   id: number
@@ -26,15 +28,6 @@ interface Member {
   address: string
   status: string
   group_id: number
-}
-
-interface CollectionSheetRow {
-  serialNo: number
-  memberId: number
-  memberName: string
-  installment: string
-  amount: string
-  installmentBalances: { [key: number]: number }
 }
 
 interface ExistingCollection {
@@ -65,6 +58,7 @@ const collection = ref({
 })
 
 const collectionSheet = ref<CollectionSheetRow[]>([])
+const collectionBalances = ref<CollectionBalance[]>([])
 const selectedGroup = ref<Group | null>(null)
 const errorMessage = ref('')
 const showPrompt = ref(false)
@@ -74,8 +68,6 @@ const promptMessage = ref('')
 const showNotification = ref(false)
 const notificationMessage = ref('')
 const notificationType = ref<'success' | 'error'>('success')
-
-const collectionBalances = ref<CollectionBalance[]>([])
 
 function showSuccessNotification(message: string) {
   notificationMessage.value = message
@@ -126,20 +118,16 @@ async function loadExistingCollections() {
     // Update collection sheet with existing data
     collectionSheet.value = collectionSheet.value.map(row => {
       const memberCollections = existingCollections.filter(c => c.member_id === row.memberId);
-      
       if (memberCollections.length > 0) {
         // Combine all installments for this member
         const installmentString = memberCollections
           .map(c => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
           .join(',');
-        
         // Calculate total amount
         const totalAmount = memberCollections.reduce((sum: number, c: ExistingCollection) => sum + c.collection_amount, 0);
-        
         // Calculate installment balances
         const installmentBalances: { [key: number]: number } = {};
         const monthlySubscription = calculateMonthlySubscription();
-        
         memberCollections.forEach((c: ExistingCollection) => {
           if (c.is_completed) {
             installmentBalances[c.installment_number] = 0;
@@ -147,11 +135,11 @@ async function loadExistingCollections() {
             installmentBalances[c.installment_number] = monthlySubscription - c.collection_amount;
           }
         });
-
+        // Set the row with previous data, user can edit
         return {
           ...row,
           installment: installmentString,
-          amount: totalAmount.toFixed(2),
+          amount: totalAmount.toString(),
           installmentBalances
         };
       }
@@ -197,7 +185,7 @@ async function handleGroupChange() {
   // Initialize collection sheet with all members
   collectionSheet.value = members.value.map((member, index) => ({
     serialNo: index + 1,
-    memberId: member.id,
+    memberId: Number(member.id),
     memberName: member.name,
     installment: '',
     amount: '',
@@ -321,34 +309,117 @@ async function handleAmountChange(row: CollectionSheetRow) {
   
   // Update balances
   handleInstallmentChange(row);
+  calculateUpdatedInstallmentBalances(row);
+}
+
+// Helper to get current and previous installment numbers for a member
+function getCurrentAndPreviousInstallments(memberBalances: CollectionBalance[]): number[] {
+  if (!memberBalances.length) return [];
+  // Find the first installment with a non-zero balance (current)
+  const currentIdx = memberBalances.findIndex(b => b.remaining_balance > 0);
+  if (currentIdx === -1) {
+    // All paid, show last two
+    return [memberBalances.length - 2, memberBalances.length - 1].filter(i => i >= 0).map(i => memberBalances[i].installment_number);
+  }
+  const prevIdx = currentIdx - 1;
+  const result = [memberBalances[currentIdx].installment_number];
+  if (prevIdx >= 0) result.unshift(memberBalances[prevIdx].installment_number);
+  return result;
+}
+
+function calculateUpdatedInstallmentBalances(row: CollectionSheetRow) {
+  // Get all balances for this member from collectionBalances
+  const memberBalances = collectionBalances.value
+    .filter(b => b.member_id === row.memberId)
+    .sort((a, b) => a.installment_number - b.installment_number);
+  let amount = parseFloat(row.amount) || 0;
+  const updatedBalances: { [key: number]: { old: number, updated: number } } = {};
+
+  // Always show current and previous installment from backend
+  let installmentsToShow: number[] = [];
+  if (row.installment) {
+    // If user entered specific installments, use those and always add previous
+    const entered = row.installment.split(',').map(inst => parseInt(inst)).filter(n => !isNaN(n));
+    if (entered.length > 0) {
+      const prev = Math.max(1, Math.min(...entered) - 1);
+      if (!entered.includes(prev) && prev > 0) entered.unshift(prev);
+      installmentsToShow = entered;
+    }
+  }
+  if (!installmentsToShow.length) {
+    // Otherwise, show current and previous from backend
+    installmentsToShow = getCurrentAndPreviousInstallments(memberBalances);
+  }
+
+  // Always use backend remaining_balance as old, and calculate new
+  for (const bal of memberBalances) {
+    if (!installmentsToShow.includes(bal.installment_number)) continue;
+    const oldBal = bal.remaining_balance; // always from backend
+    let updatedBal = oldBal;
+    if (amount > 0) {
+      if (amount >= oldBal) {
+        updatedBal = 0;
+        amount -= oldBal;
+      } else {
+        updatedBal = oldBal - amount;
+        amount = 0;
+      }
+    }
+    updatedBalances[bal.installment_number] = { old: oldBal, updated: updatedBal };
+  }
+  row.installmentBalances = updatedBalances;
 }
 
 async function handleSubmit() {
   try {
     errorMessage.value = ''
+    // Only validate required fields, allow empty member/amount rows
+    if (!collection.value.date || !collection.value.group_id) {
+      errorMessage.value = 'Please fill in all required fields';
+      showErrorNotification(errorMessage.value);
+      return;
+    }
+    // Only submit rows with both a valid member and a valid amount
     const collections = collectionSheet.value
-      .filter(row => row.installment && row.amount)
-      .map(row => ({
-        date: collection.value.date,
-        group_id: Number(collection.value.group_id),
-        member_id: row.memberId,
-        installment_string: row.installment,
-        amount: parseFloat(row.amount),
-      })) as Omit<Collection, 'id'>[]
-    
+      .filter(row => row.memberId && row.amount && !isNaN(parseFloat(row.amount)) && row.installment)
+      .map(row => {
+        const amount = parseFloat(row.amount);
+        let installment_number = 1;
+        if (row.installment) {
+          const first = row.installment.split(',')[0];
+          installment_number = parseInt(first);
+        }
+        return {
+          date: collection.value.date,
+          group_id: Number(collection.value.group_id),
+          member_id: row.memberId,
+          installment_number: installment_number,
+          collection_amount: amount,
+          installment_string: row.installment,
+          amount: amount
+        };
+      }) as Omit<Collection, 'id'>[]
+    if (collections.length === 0) {
+      showErrorNotification('Please enter at least one amount to save collections.');
+      return;
+    }
+    // Debug log
+    console.log('Submitting collections:', collections);
     // Create collections one by one
     for (const collection of collections) {
       await collectionsStore.createCollection(collection)
     }
-    showSuccessNotification('Collections saved successfully!')
     
-    // Reset form
-    collection.value.date = ''
-    collection.value.group_id = ''
-    collectionSheet.value = []
+    ('Collections saved successfully!')
+    // Wait before resetting form so notification is visible
+    setTimeout(() => {
+      collection.value.date = ''
+      collection.value.group_id = ''
+      collectionSheet.value = []
+    }, 1500);
   } catch (error: any) {
     console.error('Error creating collections:', error)
-    errorMessage.value = error.response?.data?.message || 'Failed to create collections'
+    errorMessage.value = error.response?.data?.message || error.message || 'Failed to create collections'
     showErrorNotification(errorMessage.value)
   }
 }
@@ -358,12 +429,34 @@ function validateForm() {
     errorMessage.value = 'Please fill in all required fields';
     return false;
   }
+  
+  // Validate all amounts are valid numbers
+  const invalidRows = collectionSheet.value
+    .filter(row => row.amount && isNaN(parseFloat(row.amount)));
+    
+  if (invalidRows.length > 0) {
+    errorMessage.value = 'Please enter valid amounts for all members';
+    return false;
+  }
+  
   return true;
 }
 
-// Add watcher for date changes
-watch(() => collection.value.date, async (newDate) => {
-  if (newDate && collection.value.group_id) {
+// Add watcher for date and group changes to always load previous data
+watch([
+  () => collection.value.date,
+  () => collection.value.group_id
+], async ([newDate, newGroupId]) => {
+  if (newDate && newGroupId) {
+    // Clear previous data to avoid caching issues
+    collectionSheet.value = members.value.map((member, index) => ({
+      serialNo: index + 1,
+      memberId: Number(member.id),
+      memberName: member.name,
+      installment: '',
+      amount: '',
+      installmentBalances: {}
+    }));
     await loadExistingCollections();
   }
 });
@@ -390,108 +483,44 @@ onMounted(loadGroupsAndMembers)
     <div class="header">
       <h2>Add New Collection</h2>
     </div>
-
     <form @submit.prevent="handleSubmit" class="collection-form">
       <div class="form-row">
-      <div class="form-group">
-        <label for="date">Date</label>
-        <input
-          type="date"
-          id="date"
-          v-model="collection.date"
-          required
-        />
-      </div>
-
-      <div class="form-group">
-        <label for="group_id">Group</label>
-          <select 
-            id="group_id" 
-            v-model="collection.group_id" 
-            required
-            @change="handleGroupChange"
-          >
-          <option value="">Select a group</option>
-          <option v-for="group in groups" :key="group.id" :value="group.id">
-            {{ group.name }}
-          </option>
-        </select>
+        <div class="form-group">
+          <label for="date">Date</label>
+          <input type="date" id="date" v-model="collection.date" required />
+        </div>
+        <div class="form-group">
+          <label for="group_id">Group</label>
+          <select id="group_id" v-model="collection.group_id" required @change="handleGroupChange">
+            <option value="">Select a group</option>
+            <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+          </select>
         </div>
       </div>
-
-      <div v-if="errorMessage" class="error-message">
-        {{ errorMessage }}
-      </div>
-
-      <div v-if="collectionSheet && collectionSheet.length > 0" class="collection-sheet">
-        <h3>Collection Sheet</h3>
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Serial No</th>
-                <th>Member Name</th>
-                <th>Installment</th>
-                <th>Amount</th>
-                <th>Installment Balance</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in collectionSheet" :key="row.memberId">
-                <td>{{ row.serialNo }}</td>
-                <td>{{ row.memberName }}</td>
-                <td>
-                  <input
-                    type="text"
-                    v-model="row.installment"
-                    @input="handleInstallmentChange(row)"
-                    placeholder="e.g., 1c,2,3c"
-                  />
-                </td>
-                <td>
-        <input
-          type="number"
-                    v-model="row.amount"
-                    :class="{ 'completed': isMonthlySubscriptionComplete(row) }"
-          placeholder="Enter amount"
-                    @input="handleAmountChange(row)"
-                  />
-                </td>
-                <td>
-                  <div v-for="(balance, instNo) in row.installmentBalances" :key="instNo" class="installment-balance">
-                    <span v-if="getInstallmentStatus(row.memberId, instNo).isCompleted" class="completed">
-                      Inst-{{ instNo }}: ✓ Completed
-                    </span>
-                    <span v-else>
-                      Inst-{{ instNo }}: ₹{{ getInstallmentStatus(row.memberId, instNo).remainingBalance }}
-                    </span>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-      </div>
-      </div>
-
+      <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
+      <CollectionSheetTable
+        v-if="collectionSheet && collectionSheet.length > 0"
+        :collectionSheet="collectionSheet"
+        :onInstallmentChange="handleInstallmentChange"
+        :onAmountChange="handleAmountChange"
+        :isMonthlySubscriptionComplete="isMonthlySubscriptionComplete"
+      />
       <div class="form-actions">
         <button type="submit" class="submit-button">Save Collection</button>
         <button type="button" class="cancel-button" @click="router.push('/collections')">Cancel</button>
       </div>
     </form>
-
-    <!-- Prompt Dialog -->
     <div v-if="showPrompt" class="prompt-overlay">
       <div class="prompt-dialog">
         <p>{{ promptMessage }}</p>
         <button @click="showPrompt = false" class="prompt-button">OK</button>
       </div>
     </div>
-
-    <!-- Replace custom notification with StandardNotification -->
     <StandardNotification
-      :show="showNotification"
       :message="notificationMessage"
       :type="notificationType"
+      :show="showNotification"
+      :duration="3000"
       @close="showNotification = false"
     />
   </div>
@@ -648,6 +677,11 @@ td input.completed {
   border-color: #059669;
 }
 
+.invalid {
+  border: 1px solid #e74c3c !important;
+  background: #fdecea;
+}
+
 .prompt-overlay {
   position: fixed;
   top: 0;
@@ -737,4 +771,4 @@ input[type="number"] {
   color: #059669;
   font-weight: 500;
 }
-</style> 
+</style>

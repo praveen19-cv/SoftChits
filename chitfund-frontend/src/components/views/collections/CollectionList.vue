@@ -11,10 +11,31 @@ const collectionsStore = useCollectionsStore()
 const groupsStore = useGroupsStore()
 const membersStore = useMembersStore()
 
-const groups = ref([])
-const collections = ref([])
+interface Group {
+  id: number
+  name: string
+  total_amount: number
+  member_count: number
+  start_date: string
+  end_date: string
+  status: string
+  number_of_months: number
+  created_at?: string
+  updated_at?: string
+}
+const groups = ref<Group[]>([])
+
+interface Collection {
+  id: number
+  member_name: string
+  installment: number
+  amount: number
+  status: string
+}
+
+const collections = ref<Collection[]>([])
 const selectedDate = ref('')
-const selectedGroupId = ref('')
+const selectedGroupId = ref<number | null>(null)
 const errorMessage = ref('')
 const showNotification = ref(false)
 const notificationMessage = ref('')
@@ -97,7 +118,7 @@ onMounted(loadGroups)
           <label for="group_id">Group</label>
           <select 
             id="group_id" 
-            v-model="selectedGroupId" 
+            v-model.number="selectedGroupId" 
             @change="handleGroupChange"
           >
             <option value="">Select a group</option>

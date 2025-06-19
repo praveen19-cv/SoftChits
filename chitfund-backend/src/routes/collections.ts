@@ -107,7 +107,7 @@ router.get('/by-date-group/:groupId/:date', async (req, res) => {
     const { groupId, date } = req.params;
     const db = getReadDb();
     
-    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined;
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as any;
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
@@ -212,77 +212,81 @@ router.post('/', async (req, res) => {
   const db = getWriteDb();
   try {
     const { group_id, member_id, collection_date, installment_number, collection_amount } = req.body;
-    
-    // Get group info with retry
-    const group = await withRetry(() => 
-      db.prepare('SELECT * FROM groups WHERE id = ?').get(group_id) as Group | undefined
+    const groupId = parseInt(group_id, 10);
+    const memberId = parseInt(member_id, 10);
+    let installmentNum = parseInt(installment_number, 10);
+    let amount = parseFloat(collection_amount);
+    if (isNaN(groupId) || isNaN(memberId) || isNaN(installmentNum)) {
+      return res.status(400).json({ error: 'Invalid ID values' });
+    }
+    if (isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Invalid collection amount' });
+    }
+    const group = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
     );
-    
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
-
-    // Use existing collection and balance tables with proper case
     const collectionTableName = `collection_${group_id}_${group.name.toUpperCase()}`;
     const balanceTableName = `collection_balance_${group_id}_${group.name.toUpperCase()}`;
-
-    console.log(`Using tables: ${collectionTableName}, ${balanceTableName}`);
-
-    // Get the current balance for this installment
-    const currentBalance = await withRetry(() => 
-      db.prepare(`
-        SELECT remaining_balance, total_paid, is_completed
-        FROM ${balanceTableName}
-        WHERE group_id = ? AND member_id = ? AND installment_number = ?
-      `).get(group_id, member_id, installment_number) as { remaining_balance: number; total_paid: number; is_completed: number } | undefined
-    );
-
-    if (!currentBalance) {
-      return res.status(404).json({ error: 'No balance record found for this installment' });
-    }
-
-    const result = await executeTransaction(db, () => {
-      // Insert into collections table
-      const result = db.prepare(`
-        INSERT INTO ${collectionTableName} (
-          collection_date, group_id, member_id, installment_number, 
-          collection_amount, remaining_balance, is_completed
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        collection_date,
-        group_id,
-        member_id,
-        installment_number,
-        collection_amount,
-        currentBalance.remaining_balance,
-        currentBalance.is_completed ? 1 : 0
-      );
-
-      // Update collection balance
-      const newRemainingBalance = currentBalance.remaining_balance - collection_amount;
-      const isCompleted = newRemainingBalance <= 0 ? 1 : 0;
-
-      db.prepare(`
-        UPDATE ${balanceTableName}
-        SET total_paid = total_paid + ?,
-            remaining_balance = ?,
-            is_completed = ?,
-            last_updated = CURRENT_TIMESTAMP
-        WHERE group_id = ? AND member_id = ? AND installment_number = ?
-      `).run(
-        collection_amount,
-        newRemainingBalance,
-        isCompleted,
-        group_id,
-        member_id,
-        installment_number
-      );
-
-      return result;
+    let remainingAmount = amount;
+    let currentInstallment = installmentNum;
+    let affectedInstallments: {installment: number, paid: number}[] = [];
+    await executeTransaction(db, () => {
+      while (remainingAmount > 0) {
+        // Get the current balance for this installment
+        const currentBalance = db.prepare(`
+          SELECT remaining_balance, total_paid, is_completed
+          FROM ${balanceTableName}
+          WHERE group_id = ? AND member_id = ? AND installment_number = ?
+        `).get(groupId, memberId, currentInstallment) as { remaining_balance: number; total_paid: number; is_completed: number } | undefined;
+        if (!currentBalance || currentBalance.is_completed) {
+          // If no more installments or already completed, stop
+          break;
+        }
+        const payAmount = Math.min(remainingAmount, currentBalance.remaining_balance);
+        const newRemainingBalance = currentBalance.remaining_balance - payAmount;
+        const isCompleted = newRemainingBalance <= 0 ? 1 : 0;
+        // Insert into collections table for this installment
+        db.prepare(`
+          INSERT INTO ${collectionTableName} (
+            collection_date, group_id, member_id, installment_number, 
+            collection_amount, remaining_balance, is_completed, updated_remaining_balance
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          collection_date,
+          groupId,
+          memberId,
+          currentInstallment,
+          payAmount,
+          currentBalance.remaining_balance,
+          currentBalance.is_completed ? 1 : 0,
+          newRemainingBalance
+        );
+        // Update collection balance
+        db.prepare(`
+          UPDATE ${balanceTableName}
+          SET total_paid = total_paid + ?,
+              remaining_balance = ?,
+              is_completed = ?,
+              last_updated = CURRENT_TIMESTAMP
+          WHERE group_id = ? AND member_id = ? AND installment_number = ?
+        `).run(
+          payAmount,
+          newRemainingBalance,
+          isCompleted,
+          groupId,
+          memberId,
+          currentInstallment
+        );
+        affectedInstallments.push({installment: currentInstallment, paid: payAmount});
+        remainingAmount -= payAmount;
+        currentInstallment++;
+      }
     });
-
     // Get all balances for this member to show breakup
-    const memberBalances = await withRetry(() => 
+    const memberBalances = await withRetry(() =>
       db.prepare(`
         SELECT 
           m.name as member_name,
@@ -294,27 +298,25 @@ router.post('/', async (req, res) => {
         JOIN ${balanceTableName} cb ON m.id = cb.member_id
         WHERE cb.group_id = ? AND cb.member_id = ?
         ORDER BY cb.installment_number
-      `).all(group_id, member_id) as MemberBalance[]
+      `).all(groupId, memberId) as MemberBalance[]
     );
-
-    // Format the response with breakup
     const formattedResponse = {
       member_name: memberBalances[0]?.member_name,
-      installments: memberBalances.map((b: MemberBalance) => 
+      installments: memberBalances.map((b: MemberBalance) =>
         b.is_completed ? `${b.installment_number}c` : b.installment_number
       ).join(','),
       total_amount: memberBalances.reduce((sum: number, b: MemberBalance) => sum + b.total_paid, 0),
-      installment_balances: memberBalances.map((b: MemberBalance) => 
+      installment_balances: memberBalances.map((b: MemberBalance) =>
         `Inst-${b.installment_number}: ₹${b.remaining_balance}`
-      ).join(', ')
+      ).join(', '),
+      affectedInstallments
     };
-
     res.status(201).json(formattedResponse);
   } catch (error: any) {
     console.error('Error creating collection:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to create collection',
-      details: error.message 
+      details: error.message
     });
   }
 });
@@ -446,13 +448,19 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Create table for a new group
-router.post('/:tableName/create-table', async (req, res) => {
+// Create table for a new group (now using groupId only)
+router.post('/:groupId/create-table', async (req, res) => {
   try {
-    const { tableName } = req.params;
-    const groupId = parseInt(tableName.split('_')[1]);
-    const groupName = tableName.split('_').slice(2).join('_');
-    
+    const groupId = parseInt(req.params.groupId);
+    if (!groupId || isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid groupId' });
+    }
+    const db = getWriteDb();
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as any;
+    if (!group || !group.name) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    const groupName = group.name;
     await GroupTableService.createGroupTables(groupId, groupName);
     res.status(201).json({ message: 'Collection tables created successfully' });
   } catch (error) {
@@ -739,4 +747,4 @@ router.post('/group/:groupId/reset-next-month', async (req, res) => {
   }
 });
 
-export default router; 
+export default router;

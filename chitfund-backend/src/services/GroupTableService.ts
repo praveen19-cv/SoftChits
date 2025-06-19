@@ -2,6 +2,10 @@ import { getWriteDb } from '../database/setup';
 
 export class GroupTableService {
   static getTableName(groupId: number, groupName: string, tableType: string): string {
+    if (!groupId || !groupName || isNaN(Number(groupId))) {
+      console.error('Invalid groupId or groupName for table creation:', { groupId, groupName, tableType });
+      throw new Error('Invalid groupId or groupName for table creation');
+    }
     const sanitizedName = groupName.toLowerCase().replace(/[^a-z0-9]/g, '_');
     return `${tableType}_${groupId}_${sanitizedName}`;
   }
@@ -21,6 +25,7 @@ export class GroupTableService {
           amount REAL NOT NULL,
           collection_date TEXT NOT NULL,
           month_number INTEGER NOT NULL,
+          updated_remaining_balance REAL,
           created_at TEXT DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (group_id) REFERENCES groups(id),
           FOREIGN KEY (member_id) REFERENCES members(id)
@@ -126,4 +131,4 @@ export class GroupTableService {
       subscriptionsTable: this.getTableName(groupId, groupName, 'monthly_subscription')
     };
   }
-} 
+}

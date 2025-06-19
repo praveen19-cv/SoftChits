@@ -15,6 +15,10 @@ if (!fs_1.default.existsSync(dataDir)) {
 }
 const dbPath = path_1.default.join(dataDir, 'chitfund.db');
 const db = new better_sqlite3_1.default(dbPath);
+// Set busy timeout to 5 seconds (5000 ms)
+db.pragma('busy_timeout = 5000');
+// (Optional) Enable WAL mode for better concurrency
+db.pragma('journal_mode = wal');
 exports.db = db;
 function setupDatabase() {
     // Create tables if they don't exist

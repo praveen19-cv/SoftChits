@@ -20,7 +20,6 @@ export class DatabaseConnection {
     // Initialize read connections
     for (let i = 0; i < this.maxReadConnections; i++) {
       const db = new Database(dbPath, {
-        verbose: console.log,
         fileMustExist: false,
         readonly: true  // Read-only connections
       });
@@ -43,7 +42,6 @@ export class DatabaseConnection {
     // Initialize write connections
     for (let i = 0; i < this.maxWriteConnections; i++) {
       const db = new Database(dbPath, {
-        verbose: console.log,
         fileMustExist: false
       });
 
@@ -108,4 +106,4 @@ export class DatabaseConnection {
   }
 }
 
-export const dbPool = DatabaseConnection.getInstance(); 
+export const dbPool = DatabaseConnection.getInstance();

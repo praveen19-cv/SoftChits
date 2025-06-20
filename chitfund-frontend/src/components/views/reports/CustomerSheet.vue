@@ -2,6 +2,9 @@
 import { ref, onMounted, computed, watch } from 'vue';
 import { useGroupsStore } from '@/stores/GroupsStore';
 import api from '@/services/api';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import ExcelJS from 'exceljs';
 
 interface CustomerSheetRow {
   member_id: number;
@@ -85,6 +88,54 @@ function selectGroup(group: any) {
   dropdownOpen.value = false;
   groupSearch.value = '';
 }
+
+function downloadAsPDF() {
+  const doc = new jsPDF();
+  autoTable(doc, {
+    head: [['Name', ...allInstallmentNumbers.value.map(num => `Installment ${num}`)]],
+    body: allMembers.value.map(member => [
+      member.name,
+      ...allInstallmentNumbers.value.map(num => {
+        const row = customerSheetData.value.find(
+          (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
+        );
+        return row ? (row.is_completed ? row.total_paid : row.remaining_balance) : '-';
+      })
+    ])
+  });
+  doc.save('CustomerSheet.pdf');
+}
+
+function downloadAsExcel() {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('CustomerSheet');
+
+  // Add header row
+  worksheet.addRow(['Name', ...allInstallmentNumbers.value.map(num => `Installment ${num}`)]);
+
+  // Add data rows
+  allMembers.value.forEach(member => {
+    const rowData = [
+      member.name,
+      ...allInstallmentNumbers.value.map(num => {
+        const row = customerSheetData.value.find(
+          (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
+        );
+        return row ? (row.is_completed ? row.total_paid : row.remaining_balance) : '-';
+      })
+    ];
+    worksheet.addRow(rowData);
+  });
+
+  // Save the file
+  workbook.xlsx.writeBuffer().then(buffer => {
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'CustomerSheet.xlsx';
+    link.click();
+  });
+}
 </script>
 
 <template>
@@ -115,6 +166,8 @@ function selectGroup(group: any) {
             <div v-if="!filteredGroupsWithSearch.length" class="cs-dropdown-noresult">No groups found</div>
           </div>
         </div>
+        <button @click="downloadAsPDF" class="cs-download-btn">Download as PDF</button>
+        <button @click="downloadAsExcel" class="cs-download-btn">Download as Excel</button>
       </div>
     </div>
     <div v-if="loading" class="cs-loading">Loading...</div>
@@ -125,11 +178,10 @@ function selectGroup(group: any) {
             <tr>
               <th>Name</th>
               <th v-for="num in allInstallmentNumbers" :key="num">Installment {{ num }}</th>
-              <th>Total Paid</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="member in allMembers as Array<{ id: number; name: string }>" :key="member.id">
+            <tr v-for="member in allMembers" :key="member.id">
               <td class="cs-name">{{ member.name }}</td>
               <td v-for="num in allInstallmentNumbers" :key="num">
                 <span :class="isCompleted(customerSheetData.find((row: CustomerSheetRow) => row.member_id === member.id && row.installment_number === num)) ? 'paid' : 'unpaid'">
@@ -141,9 +193,6 @@ function selectGroup(group: any) {
                   })()
                   }}
                 </span>
-              </td>
-              <td>
-                {{ customerSheetData.filter((row: CustomerSheetRow) => row.member_id === member.id).reduce((sum: number, row: CustomerSheetRow) => sum + row.total_paid, 0) }}
               </td>
             </tr>
           </tbody>
@@ -289,5 +338,17 @@ function selectGroup(group: any) {
 .material-icons {
   font-size: 1.2rem;
   vertical-align: middle;
+}
+.cs-download-btn {
+  background-color: #1976d2;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+.cs-download-btn:hover {
+  background-color: #1565c0;
 }
 </style>

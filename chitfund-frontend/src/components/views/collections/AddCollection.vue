@@ -344,50 +344,65 @@ async function handleSubmit() {
       showErrorNotification('Please fill in all required fields');
       return;
     }
+
     const collections = collectionSheet.value
-      .filter(row => row.memberId && row.amount && !isNaN(parseFloat(row.amount)) && row.installment);
+      .filter(row => row.memberId && row.amount !== undefined && !isNaN(parseFloat(row.amount)) && row.installment);
+
     if (collections.length === 0) {
       showErrorNotification('Please enter at least one amount to save collections.');
       return;
     }
+
+    let hasError = false;
+
     for (const row of collections) {
-      const amount = parseFloat(row.amount);
-      let installment_number = 1;
-      if (row.installment) {
-        const first = row.installment.split(',')[0];
-        installment_number = parseInt(first);
-      }
-      if (row.id) {
-        const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
-          collection.value.date,
-          Number(collection.value.group_id)
-        );
-        const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
-        for (const old of memberOldCollections) {
-          await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
+      const payload = {
+        date: collection.value.date,
+        group_id: Number(collection.value.group_id),
+        member_id: row.memberId,
+        installment: row.installment,
+        amount: parseFloat(row.amount),
+        member_name: members.value.find(m => m.id === row.memberId)?.name || '',
+        installment_number: parseInt(row.installment.split(',')[0]),
+        collection_amount: parseFloat(row.amount),
+        remaining_balance: 0, // Default value, adjust as needed
+        is_completed: 0, // Default value, adjust as needed
+        created_at: new Date().toISOString(),
+        updated_remaining_balance: 0 // Default value, adjust as needed
+      };
+
+      try {
+        if (row.id) {
+          const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
+            collection.value.date,
+            Number(collection.value.group_id)
+          );
+          const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
+          for (const old of memberOldCollections) {
+            await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
+          }
+          await collectionsStore.createCollection(payload);
+        } else {
+          await collectionsStore.createCollection(payload);
         }
-        await collectionsStore.createCollection({
-          date: collection.value.date,
-          group_id: Number(collection.value.group_id),
-          member_id: row.memberId,
-          installment_string: row.installment,
-          amount: amount
-        });
-      } else {
-        await collectionsStore.createCollection({
-          date: collection.value.date,
-          group_id: Number(collection.value.group_id),
-          member_id: row.memberId,
-          installment_string: row.installment,
-          amount: amount
-        });
+      } catch (error: any) {
+        hasError = true;
+        console.error('Error creating/updating collection for member:', row.memberId, error);
+        showErrorNotification(`Failed to save collection for member ID ${row.memberId}: ${error.response?.data?.message || error.message}`);
       }
     }
-    showSuccessNotification('Collections saved successfully!');
+
+    if (!hasError) {
+      showSuccessNotification('Collections saved successfully!');
+    } else {
+      showErrorNotification('Some collections failed to save. Please check the notifications for details.');
+    }
+
     setTimeout(() => {
       collection.value.date = '';
       collection.value.group_id = '';
       collectionSheet.value = [];
+      router.push('/collections/add');
     }, 1500);
   } catch (error: any) {
     console.error('Error creating/updating collections:', error);

@@ -4,12 +4,19 @@ import api from '../services/api';
 import { useGroupsStore } from './GroupsStore';
 
 export interface Collection {
-  id?: number;
+  id: number;
   date: string;
   group_id: number;
   member_id: number;
-  installment_string: string;
-  amount: number;
+  installment_number: number;
+  collection_amount: number;
+  remaining_balance: number;
+  is_completed: number;
+  created_at: string;
+  updated_remaining_balance: number;
+  member_name: string;
+  installment: string; // Added property to support installment string
+  amount: number; // Added property to support collection amount
 }
 
 export interface ExistingCollection {
@@ -124,8 +131,8 @@ export const useCollectionsStore = defineStore('collections', () => {
       const collectionData = {
         group_id: collection.group_id,
         member_id: collection.member_id,
-        installment_number: parseInt(collection.installment_string),
-        collection_amount: collection.amount,
+        installment_number: collection.installment_number,
+        collection_amount: collection.collection_amount,
         collection_date: collection.date
       };
 
@@ -164,7 +171,7 @@ export const useCollectionsStore = defineStore('collections', () => {
       const tableName = await getTableName(collection.group_id);
       const response = await api.put(`/collections/${id}`, {
         ...collection,
-        collection_amount: collection.amount // Map amount to collection_amount for backend
+        collection_amount: collection.collection_amount // Map collection_amount for backend
       });
       const index = collections.value.findIndex(c => c.id === id);
       if (index !== -1) {
@@ -324,6 +331,58 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
+  async function fetchCollectionsByCustomerAndDateRange(
+    customer: string,
+    groupId: number,
+    fromDate: string,
+    toDate: string
+  ) {
+    try {
+      loading.value = true;
+      error.value = '';
+
+      // Ensure group data is loaded
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const tableName = await getTableName(groupId);
+      const response = await api.get(
+        `/collections/${groupId}/customer-sheet`,
+        {
+          params: { customer, fromDate, toDate },
+        }
+      );
+
+      return {
+        collections: response.data.collections,
+        totalInstallments: response.data.totalInstallments,
+        totalAmount: response.data.totalAmount,
+      };
+    } catch (err: any) {
+      error.value = err.response?.data?.message || 'Failed to fetch collections';
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function fetchCollectionsByTableNameAndDate(tableName: string, date: string): Promise<Collection[]> {
+    try {
+      loading.value = true;
+      error.value = '';
+
+      const response = await api.get(`/collections/by-table-date/${tableName}/${date}`);
+      console.log('Backend response:', response.data);
+      return response.data;
+    } catch (err: any) {
+      error.value = err.response?.data?.message || 'Failed to fetch collections';
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     collections,
     collectionBalances,
@@ -340,6 +399,8 @@ export const useCollectionsStore = defineStore('collections', () => {
     exportNextMonthPayout,
     resetNextMonthPayout,
     getNextMonthStatus,
-    exportMonthPayout
+    exportMonthPayout,
+    fetchCollectionsByCustomerAndDateRange,
+    fetchCollectionsByTableNameAndDate
   };
 });

@@ -62,7 +62,7 @@ function handleNavigation() {
           Collections
         </a>
         <div class="navbar-dropdown" v-show="showCollectionsDropdown">
-          <router-link to="/collections" @click="handleNavigation">View Collections</router-link>
+          <router-link to="/collections/view" @click="handleNavigation">View Collections</router-link>
           <router-link to="/collections/add" @click="handleNavigation">Add Collection</router-link>
         </div>
       </div>
@@ -125,4 +125,4 @@ function handleNavigation() {
 .navbar-dropdown a:hover {
   background-color: #f8f9fa;
 }
-</style> 
+</style>

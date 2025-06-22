@@ -106,23 +106,41 @@ router.get('/by-date-group/:groupId/:date', async (req, res) => {
   try {
     const { groupId, date } = req.params;
     const db = getReadDb();
-    
+
     const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as any;
     if (!group) {
+      console.error(`Group not found for ID: ${groupId}`);
       return res.status(404).json({ error: 'Group not found' });
     }
 
     const tableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection');
-    console.log(`Using collection table: ${tableName}`);
     
     const collections = await withRetry(() => 
       db.prepare(`SELECT * FROM ${tableName} WHERE collection_date = ? ORDER BY created_at DESC`)
         .all(date)
     );
-    
+
     res.json(collections);
   } catch (error: any) {
     console.error('Error fetching collections by date:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get collections by table name and date
+router.get('/by-table-date/:tableName/:date', async (req, res) => {
+  try {
+    const { tableName, date } = req.params;
+    const db = getReadDb();
+
+    const collections = await withRetry(() => 
+      db.prepare(`SELECT * FROM ${tableName} WHERE collection_date = ? ORDER BY created_at DESC`)
+        .all(date)
+    );
+
+    res.json(collections);
+  } catch (error: any) {
+    console.error('Error fetching collections by table name and date:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -219,7 +237,7 @@ router.post('/', async (req, res) => {
     if (isNaN(groupId) || isNaN(memberId) || isNaN(installmentNum)) {
       return res.status(400).json({ error: 'Invalid ID values' });
     }
-    if (isNaN(amount) || amount <= 0) {
+    if (isNaN(amount) || amount < 0) {
       return res.status(400).json({ error: 'Invalid collection amount' });
     }
     const group = await withRetry(() =>

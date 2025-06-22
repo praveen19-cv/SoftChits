@@ -50,15 +50,16 @@ const routes: Array<RouteRecordRaw> = [
     component: () => import('../components/views/groups/MoreGroupDetails/MoreGroupDetails.vue')
   },
   {
-    path: '/collections',
-    name: 'collections',
-    component: () => import('../components/views/collections/CollectionList.vue')
+    path: '/collections/view',
+    name: 'view-collections',
+    component: () => import('../components/views/collections/ViewCollection.vue')
   },
   {
     path: '/collections/add',
     name: 'add-collection',
     component: () => import('../components/views/collections/AddCollection.vue')
   },
+
   ...reportRoutes
 ]
 
@@ -69,4 +70,4 @@ function createRouterInstance() {
   })
 }
 
-export default createRouterInstance() 
+export default createRouterInstance()

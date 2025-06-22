@@ -5,6 +5,8 @@ import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import { useMembersStore } from '@/stores/MembersStore'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import DateWise from './ViewCollections/DateWise.vue'
+import CustomerWise from './ViewCollections/CustomerWise.vue'
 
 const router = useRouter()
 const collectionsStore = useCollectionsStore()
@@ -40,6 +42,7 @@ const errorMessage = ref('')
 const showNotification = ref(false)
 const notificationMessage = ref('')
 const notificationType = ref<'success' | 'error'>('success')
+const activeTab = ref('dateWise')
 
 async function loadGroups() {
   try {
@@ -102,65 +105,76 @@ onMounted(loadGroups)
       <h2>View Collections</h2>
     </div>
 
-    <div class="filters">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="date">Date</label>
-          <input
-            type="date"
-            id="date"
-            v-model="selectedDate"
-            @change="handleDateChange"
-          />
-        </div>
+    <div class="tabs">
+      <button @click="activeTab = 'dateWise'">Date Wise</button>
+      <button @click="activeTab = 'customerWise'">Customer Wise</button>
+    </div>
 
-        <div class="form-group">
-          <label for="group_id">Group</label>
-          <select 
-            id="group_id" 
-            v-model.number="selectedGroupId" 
-            @change="handleGroupChange"
-          >
-            <option value="">Select a group</option>
-            <option v-for="group in groups" :key="group.id" :value="group.id">
-              {{ group.name }}
-            </option>
-          </select>
+    <div v-if="activeTab === 'dateWise'">
+      <div class="filters">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="date">Date</label>
+            <input
+              type="date"
+              id="date"
+              v-model="selectedDate"
+              @change="handleDateChange"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="group_id">Group</label>
+            <select 
+              id="group_id" 
+              v-model.number="selectedGroupId" 
+              @change="handleGroupChange"
+            >
+              <option value="">Select a group</option>
+              <option v-for="group in groups" :key="group.id" :value="group.id">
+                {{ group.name }}
+              </option>
+            </select>
+          </div>
         </div>
+      </div>
+
+      <div v-if="collections.length > 0" class="collection-table">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Serial No</th>
+                <th>Member Name</th>
+                <th>Installment</th>
+                <th>Amount</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(collection, index) in collections" :key="collection.id">
+                <td>{{ index + 1 }}</td>
+                <td>{{ collection.member_name }}</td>
+                <td>{{ collection.installment }}</td>
+                <td>{{ collection.amount }}</td>
+                <td>
+                  <span :class="['status', collection.status]">
+                    {{ collection.status }}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div v-else-if="selectedDate && selectedGroupId" class="no-data">
+        No collections found for the selected date and group
       </div>
     </div>
 
-    <div v-if="collections.length > 0" class="collection-table">
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>Serial No</th>
-              <th>Member Name</th>
-              <th>Installment</th>
-              <th>Amount</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(collection, index) in collections" :key="collection.id">
-              <td>{{ index + 1 }}</td>
-              <td>{{ collection.member_name }}</td>
-              <td>{{ collection.installment }}</td>
-              <td>{{ collection.amount }}</td>
-              <td>
-                <span :class="['status', collection.status]">
-                  {{ collection.status }}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div v-else-if="selectedDate && selectedGroupId" class="no-data">
-      No collections found for the selected date and group
+    <div v-if="activeTab === 'customerWise'">
+      <!-- Customer Wise component will be here -->
     </div>
 
     <StandardNotification
@@ -186,6 +200,25 @@ onMounted(loadGroups)
 h2 {
   margin: 0;
   color: #2c3e50;
+}
+
+.tabs {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  border: none;
+  background-color: #3498db;
+  color: white;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+button:hover {
+  background-color: #2980b9;
 }
 
 .filters {
@@ -285,4 +318,4 @@ th {
     padding: 1rem;
   }
 }
-</style> 
+</style>

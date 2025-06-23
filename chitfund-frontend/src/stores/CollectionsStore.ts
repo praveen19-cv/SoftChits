@@ -3,23 +3,15 @@ import { ref } from 'vue';
 import api from '../services/api';
 import { useGroupsStore } from './GroupsStore';
 
-export interface Collection {
-  id: number;
-  date: string;
+export interface AddCollection {
   group_id: number;
   member_id: number;
   installment_number: number;
   collection_amount: number;
-  remaining_balance: number;
-  is_completed: number;
-  created_at: string;
-  updated_remaining_balance: number;
-  member_name: string;
-  installment: string; // Added property to support installment string
-  amount: number; // Added property to support collection amount
+  date: string;
 }
 
-export interface ExistingCollection {
+export interface ViewCollection {
   id: number;
   collection_date: string;
   group_id: number;
@@ -29,6 +21,10 @@ export interface ExistingCollection {
   remaining_balance: number;
   is_completed: number;
   created_at: string;
+  updated_remaining_balance: number;
+  member_name: string;
+  installment: string;
+  amount: number;
 }
 
 export interface CollectionBalance {
@@ -44,7 +40,7 @@ export interface CollectionBalance {
 }
 
 export const useCollectionsStore = defineStore('collections', () => {
-  const collections = ref<Collection[]>([]);
+  const collections = ref<ViewCollection[]>([]);
   const collectionBalances = ref<CollectionBalance[]>([]);
   const groupsStore = useGroupsStore();
   const loading = ref(false);
@@ -117,7 +113,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
-  async function createCollection(collection: Omit<Collection, 'id'>) {
+  async function createCollection(collection: AddCollection) {
     try {
       loading.value = true;
       error.value = '';
@@ -155,7 +151,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
-  async function updateCollection(id: number, collection: Partial<Collection>) {
+  async function updateCollection(id: number, collection: Partial<ViewCollection>) {
     if (!collection.group_id) {
       throw new Error('Group ID is required for update');
     }
@@ -216,8 +212,6 @@ export const useCollectionsStore = defineStore('collections', () => {
       if (!groupsStore.groups.length) {
         await groupsStore.fetchGroups();
       }
-
-      const tableName = await getTableName(groupId);
       const response = await api.get(`/collections/by-date-group/${groupId}/${date}`);
       return response.data;
     } catch (err: any) {
@@ -228,7 +222,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
-  async function fetchCollectionsByGroup(groupId: number): Promise<ExistingCollection[]> {
+  async function fetchCollectionsByGroup(groupId: number): Promise<ViewCollection[]> {
     try {
       loading.value = true;
       error.value = '';
@@ -367,13 +361,11 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
-  async function fetchCollectionsByTableNameAndDate(tableName: string, date: string): Promise<Collection[]> {
+  async function fetchCollectionsByTableNameAndDate(tableName: string, date: string): Promise<ViewCollection[]> {
     try {
       loading.value = true;
       error.value = '';
-
       const response = await api.get(`/collections/by-table-date/${tableName}/${date}`);
-      console.log('Backend response:', response.data);
       return response.data;
     } catch (err: any) {
       error.value = err.response?.data?.message || 'Failed to fetch collections';

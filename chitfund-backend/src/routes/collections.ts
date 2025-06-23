@@ -106,21 +106,31 @@ router.get('/by-date-group/:groupId/:date', async (req, res) => {
   try {
     const { groupId, date } = req.params;
     const db = getReadDb();
-
     const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as any;
     if (!group) {
       console.error(`Group not found for ID: ${groupId}`);
       return res.status(404).json({ error: 'Group not found' });
     }
-
     const tableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection');
-    
-    const collections = await withRetry(() => 
-      db.prepare(`SELECT * FROM ${tableName} WHERE collection_date = ? ORDER BY created_at DESC`)
-        .all(date)
-    );
+    const tableExists = db.prepare(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' AND name=?
+    `).get(tableName);
 
-    res.json(collections);
+    if (!tableExists) {
+      console.error(`Table does not exist: ${tableName}`);
+      return res.status(404).json({ error: 'Table not found' });
+    }
+    try {
+      const collections = await withRetry(() => 
+        db.prepare(`SELECT * FROM ${tableName} WHERE collection_date = ? ORDER BY created_at DESC`)
+          .all(date)
+      );
+      res.json(collections);
+    } catch (queryError) {
+      console.error(`Error executing query on table ${tableName}:`, queryError);
+      res.status(500).json({ error: 'Failed to execute query', details: queryError instanceof Error ? queryError.message : String(queryError) });
+    }
   } catch (error: any) {
     console.error('Error fetching collections by date:', error);
     res.status(500).json({ error: error.message });
@@ -282,6 +292,19 @@ router.post('/', async (req, res) => {
           currentBalance.is_completed ? 1 : 0,
           newRemainingBalance
         );
+        // If remaining_balance is now 0, update is_completed to 1 for this row
+        if (newRemainingBalance === 0) {
+          db.prepare(`
+            UPDATE ${collectionTableName}
+            SET is_completed = 1
+            WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
+          `).run(
+            groupId,
+            memberId,
+            currentInstallment,
+            collection_date
+          );
+        }
         // Update collection balance
         db.prepare(`
           UPDATE ${balanceTableName}
@@ -762,6 +785,52 @@ router.post('/group/:groupId/reset-next-month', async (req, res) => {
   } catch (error) {
     console.error('Error resetting next month payout:', error);
     res.status(500).json({ error: 'Failed to reset next month payout' });
+  }
+});
+
+// Get customer-wise collection sheet for a group
+router.get('/:groupId/customer-sheet', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const customerId = Number(req.query.customer);
+    const fromDate = req.query.fromDate as string;
+    const toDate = req.query.toDate as string;
+    if (!groupId || !customerId || !fromDate || !toDate) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+    const db = getReadDb();
+    // Get group details
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
+    );
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    // Get the dynamic table name for collections
+    const collectionsTableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection');
+    // Check if table exists
+    const tableExists = db.prepare(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' AND name=?
+    `).get(collectionsTableName);
+    if (!tableExists) {
+      return res.status(404).json({ error: 'Collection table not found' });
+    }
+    // Fetch collections for the customer in the date range
+    const collections = await withRetry(() =>
+      db.prepare(`
+        SELECT c.*, m.name as member_name
+        FROM ${collectionsTableName} c
+        JOIN members m ON c.member_id = m.id
+        WHERE c.group_id = ? AND c.member_id = ?
+          AND c.collection_date >= ? AND c.collection_date <= ?
+        ORDER BY c.collection_date ASC, c.installment_number ASC
+      `).all(groupId, customerId, fromDate, toDate)
+    );
+    res.json(collections);
+  } catch (error) {
+    console.error('Error fetching customer-wise collection sheet:', error);
+    res.status(500).json({ error: 'Failed to fetch customer-wise collection sheet' });
   }
 });
 

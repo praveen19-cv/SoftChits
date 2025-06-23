@@ -340,7 +340,6 @@ export const useCollectionsStore = defineStore('collections', () => {
         await groupsStore.fetchGroups();
       }
 
-      const tableName = await getTableName(groupId);
       const response = await api.get(
         `/collections/${groupId}/customer-sheet`,
         {
@@ -348,11 +347,8 @@ export const useCollectionsStore = defineStore('collections', () => {
         }
       );
 
-      return {
-        collections: response.data.collections,
-        totalInstallments: response.data.totalInstallments,
-        totalAmount: response.data.totalAmount,
-      };
+      // Return the array directly
+      return response.data;
     } catch (err: any) {
       error.value = err.response?.data?.message || 'Failed to fetch collections';
       throw err;
@@ -375,6 +371,18 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
+  // Update the API endpoint to use /api/collection-balance instead of /api/collections
+  async function fetchPendingInstallmentsForCustomer(customerId: number, groupId: number) {
+    try {
+      const response = await api.get(`/collection-balance/${groupId}/pending-balance`, {
+        params: { customerId }
+      })
+      return response.data // Should be an array of pending installments
+    } catch (error) {
+      throw error
+    }
+  }
+
   return {
     collections,
     collectionBalances,
@@ -393,6 +401,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     getNextMonthStatus,
     exportMonthPayout,
     fetchCollectionsByCustomerAndDateRange,
-    fetchCollectionsByTableNameAndDate
+    fetchCollectionsByTableNameAndDate,
+    fetchPendingInstallmentsForCustomer
   };
 });

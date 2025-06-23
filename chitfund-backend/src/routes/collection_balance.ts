@@ -94,4 +94,54 @@ router.get('/:groupId/customer-sheet', async (req, res) => {
   }
 });
 
+// GET /api/collection-balance/:groupId/pending-balance?customerId=123
+router.get('/:groupId/pending-balance', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const customerId = Number(req.query.customerId);
+    if (!customerId) {
+      return res.status(400).json({ error: 'customerId is required' });
+    }
+    const db = getReadDb();
+
+    // Get group details
+    const group: any = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId)
+    );
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Build table name
+    const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
+    console.log(`Using balance table: ${balanceTableName}`);
+
+    // Check if table exists
+    const tableExists = await withRetry(() =>
+      db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(balanceTableName)
+    );
+    if (!tableExists) {
+      return res.json([]);
+    }
+
+    // Query all pending installments for this customer in this group (no due_date)
+    const pendingRows = await withRetry(() =>
+      db.prepare(`
+        SELECT 
+          installment_number,
+          remaining_balance as pending_amount,
+          is_completed
+        FROM ${balanceTableName}
+        WHERE member_id = ? AND group_id = ? AND is_completed = 0
+        ORDER BY installment_number
+      `).all(customerId, groupId)
+    );
+
+    res.json(pendingRows);
+  } catch (error) {
+    console.error('Error fetching pending installments:', error);
+    res.status(500).json({ error: 'Failed to fetch pending installments', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 export default router;

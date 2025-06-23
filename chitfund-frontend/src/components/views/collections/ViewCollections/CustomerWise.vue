@@ -84,6 +84,7 @@
                 <th>Installment</th>
                 <th>Amount</th>
                 <th>Status</th>
+                <th>Pending Balance</th>
               </tr>
             </thead>
             <tbody>
@@ -95,12 +96,15 @@
                     {{ collection.is_completed ? 'Completed' : 'Pending' }}
                   </span>
                 </td>
+                <td>
+                  <span>{{ collection.updated_remaining_balance !== undefined ? '₹' + (collection.updated_remaining_balance || 0).toLocaleString() : '-' }}</span>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
         <div class="summary total-amount">
-          <span>Total Installments: <b>{{ totalInstallments }}</b></span>
+          <span>Total Transactions: <b>{{ totalInstallments }}</b></span>
           <span style="margin-left:2rem;">Total Amount: <b class="total-value">₹{{ totalAmount.toLocaleString() }}</b></span>
         </div>
       </div>
@@ -108,6 +112,7 @@
         <img src="https://cdn-icons-png.flaticon.com/512/4076/4076549.png" alt="No Data" class="no-data-img" />
         <div>No collections found for the selected criteria.</div>
       </div>
+      <PendingBalanceEach :customerId="selectedCustomerId" :groupId="selectedGroupId" />
     </div>
   </div>
 </template>
@@ -117,6 +122,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useMembersStore } from '@/stores/MembersStore'
+import PendingBalanceEach from './PendingBalanceEach.vue'
 
 const groupsStore = useGroupsStore()
 const collectionsStore = useCollectionsStore()
@@ -187,26 +193,15 @@ async function onSubmit() {
   if (selectedCustomerId.value && selectedGroupId.value && fromDate.value && toDate.value) {
     try {
       const response = await collectionsStore.fetchCollectionsByCustomerAndDateRange(
-        String(selectedCustomerId.value), // convert to string for TS
+        String(selectedCustomerId.value),
         selectedGroupId.value,
         fromDate.value,
         toDate.value
       )
-      // If response is an array, handle it directly
-      if (Array.isArray(response)) {
-        collections.value = response
-        totalInstallments.value = response.length
-        totalAmount.value = response.reduce((sum, c) => sum + (c.collection_amount || 0), 0)
-      } else if (response && response.collections) {
-        // fallback for old API shape
-        collections.value = response.collections
-        totalInstallments.value = response.totalInstallments
-        totalAmount.value = response.totalAmount
-      } else {
-        collections.value = []
-        totalInstallments.value = 0
-        totalAmount.value = 0
-      }
+      // Response is an array of collections
+      collections.value = response
+      totalInstallments.value = response.length
+      totalAmount.value = response.reduce((sum: number, c: any) => sum + (c.collection_amount || 0), 0)
     } catch (err: any) {
       errorMessage.value = err?.response?.data?.message || 'No data found or server error.'
       collections.value = []
@@ -240,7 +235,6 @@ watch(selectedGroupId, () => {
 <style scoped>
 .customerwise-bg {
   min-height: 100vh;
-  background: #fff;
   padding: 2rem 0;
 }
 .customerwise-container {

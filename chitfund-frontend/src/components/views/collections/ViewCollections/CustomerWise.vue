@@ -82,6 +82,7 @@
             <thead>
               <tr>
                 <th>Installment</th>
+                <th>Collection Date</th>
                 <th>Amount</th>
                 <th>Status</th>
                 <th>Pending Balance</th>
@@ -90,6 +91,7 @@
             <tbody>
               <tr v-for="collection in collections" :key="collection.id">
                 <td>{{ collection.installment_number }}</td>
+                <td>{{ collection.collection_date ? (new Date(collection.collection_date).toLocaleDateString('en-GB')) : '-' }}</td>
                 <td>₹{{ (collection.collection_amount || 0).toLocaleString() }}</td>
                 <td>
                   <span :class="['status', collection.is_completed ? 'completed' : 'pending']">

@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useGroupsStore } from '@/stores/GroupsStore'
@@ -444,6 +444,11 @@ watch([
   }
 });
 
+// Computed property for total collected amount
+const totalCollectedAmount = computed(() => {
+  return collectionSheet.value.reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0)
+})
+
 function getMemberBalances(memberId: number): CollectionBalance[] {
   return collectionBalances.value.filter(b => b.member_id === memberId)
 }
@@ -488,6 +493,9 @@ onMounted(loadGroupsAndMembers)
         :onAmountChange="handleAmountChange"
         :isMonthlySubscriptionComplete="isMonthlySubscriptionComplete"
       />
+      <div v-if="collectionSheet && collectionSheet.length > 0" class="total-collected-amount">
+        <b>Total Collected Amount:</b> ₹{{ totalCollectedAmount.toLocaleString() }}
+      </div>
       <div class="form-actions">
         <button type="submit" class="submit-button">Save Collection</button>
         <button type="button" class="cancel-button" @click="router.push('/collections')">Cancel</button>
@@ -707,6 +715,22 @@ td input.completed {
   background-color: #2980b9;
 }
 
+.total-collected-amount {
+  display: inline-block;
+  margin: 1.5rem 0 1rem 0;
+  padding: 1.2rem 2.5rem 1.2rem 1.5rem;
+  background: linear-gradient(90deg, #e3f2fd 0%, #bbdefb 100%);
+  border-radius: 10px;
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: #1976d2;
+  box-shadow: 0 2px 8px rgba(44, 62, 80, 0.10);
+  text-align: right;
+  letter-spacing: 0.5px;
+  min-width: 280px;
+  max-width: 100%;
+}
+
 /* Responsive styles */
 @media (max-width: 768px) {
   .form-row {
@@ -735,10 +759,6 @@ input[type="number"] {
   appearance: textfield;
 }
 
-/* Remove custom notification styles */
-.notification {
-  display: none;
-}
 
 .installment-balance {
   padding: 4px 0;

@@ -834,4 +834,81 @@ router.get('/:groupId/customer-sheet', async (req, res) => {
   }
 });
 
+// Get exported monthly subscriptions for a group
+router.get('/:groupId/monthly-subscription', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const db = getReadDb();
+    // Get group details
+    const group = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
+    );
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    // Get the dynamic table name for monthly_subscription
+    const monthlySubscriptionTable = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
+    // Check if table exists
+    const tableExists = db.prepare(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' AND name=?
+    `).get(monthlySubscriptionTable);
+    if (!tableExists) {
+      return res.json([]); // Return empty array if table doesn't exist
+    }
+    // Fetch all exported monthly subscriptions for the group
+    const rows = await withRetry(() =>
+      db.prepare(`
+        SELECT month_number, monthly_subscription, is_exported
+        FROM ${monthlySubscriptionTable}
+        WHERE is_exported = 1
+        ORDER BY month_number ASC
+      `).all()
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching monthly subscriptions:', error);
+    res.status(500).json({ error: 'Failed to fetch monthly subscriptions' });
+  }
+});
+
+// Set is_exported for a monthly subscription (PUT)
+router.put('/:groupId/monthly-subscription/:month/export', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const month = Number(req.params.month);
+    const { is_exported } = req.body;
+    const db = getWriteDb();
+    // Get group details
+    const group = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
+    );
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    // Get the dynamic table name for monthly_subscription
+    const monthlySubscriptionTable = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
+    // Check if table exists
+    const tableExists = db.prepare(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' AND name=?
+    `).get(monthlySubscriptionTable);
+    if (!tableExists) {
+      return res.status(404).json({ error: 'Monthly subscription table not found' });
+    }
+    // Update is_exported for the month
+    await withRetry(() =>
+      db.prepare(`
+        UPDATE ${monthlySubscriptionTable}
+        SET is_exported = ?
+        WHERE month_number = ?
+      `).run(is_exported ? 1 : 0, month)
+    );
+    res.json({ message: 'Export status updated successfully' });
+  } catch (error) {
+    console.error('Error updating export status:', error);
+    res.status(500).json({ error: 'Failed to update export status' });
+  }
+});
+
 export default router;

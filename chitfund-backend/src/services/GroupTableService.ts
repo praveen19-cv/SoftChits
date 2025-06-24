@@ -94,6 +94,7 @@ export class GroupTableService {
           total_dividend REAL NOT NULL,
           distributed_dividend REAL NOT NULL,
           monthly_subscription REAL NOT NULL,
+          is_exported BOOLEAN NOT NULL DEFAULT 0,
           created_at TEXT DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (group_id) REFERENCES groups(id)
         )

@@ -383,6 +383,20 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
+  // Set is_exported for a monthly subscription (backend API call)
+  async function setMonthlySubscriptionExportStatus(groupId: number, month: number, isExported: boolean) {
+    try {
+      loading.value = true;
+      error.value = '';
+      await api.put(`/collections/${groupId}/monthly-subscription/${month}/export`, { is_exported: isExported });
+    } catch (err: any) {
+      error.value = err.response?.data?.message || 'Failed to update export status';
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     collections,
     collectionBalances,
@@ -402,6 +416,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     exportMonthPayout,
     fetchCollectionsByCustomerAndDateRange,
     fetchCollectionsByTableNameAndDate,
-    fetchPendingInstallmentsForCustomer
+    fetchPendingInstallmentsForCustomer,
+    setMonthlySubscriptionExportStatus
   };
 });

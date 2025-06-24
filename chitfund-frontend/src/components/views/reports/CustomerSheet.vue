@@ -33,27 +33,80 @@ const selectedGroupName = computed(() => {
   return group ? group.name : '';
 });
 
-const allInstallmentNumbers = computed(() => {
-  const set = new Set<number>();
-  customerSheetData.value.forEach(row => {
-    set.add(row.installment_number);
-  });
-  return Array.from(set).sort((a, b) => a - b);
+// Fetch monthly subscription amounts for exported installments
+const monthlySubscriptionAmounts = ref<Record<number, number>>({});
+const exportedInstallmentNumbers = ref<number[]>([]); // List of exported installment numbers
+
+async function fetchMonthlySubscriptionAmounts(groupId: number) {
+  try {
+    // Fetch all exported installments from monthly_subscription table for this group
+    const group = groupsStore.groups.find(g => g.id === groupId);
+    if (!group) return;
+    const groupName = group.name;
+    const response = await api.get(`/collections/${groupId}/monthly-subscription`);
+    // Response should be an array of { month_number, monthly_subscription, is_exported }
+    const exported = response.data.filter((row: any) => row.is_exported);
+    const amounts: Record<number, number> = {};
+    const numbers: number[] = [];
+    exported.forEach((row: any) => {
+      amounts[row.month_number] = row.monthly_subscription;
+      numbers.push(row.month_number);
+    });
+    // Sort by month_number
+    exportedInstallmentNumbers.value = numbers.sort((a, b) => a - b);
+    monthlySubscriptionAmounts.value = amounts;
+  } catch (error) {
+    console.error('Error fetching monthly subscription amounts:', error);
+    monthlySubscriptionAmounts.value = {};
+    exportedInstallmentNumbers.value = [];
+  }
+}
+
+watch(selectedGroupId, async (newVal) => {
+  if (newVal) {
+    loading.value = true;
+    try {
+      const response = await api.get(`/collection-balance/${newVal}/customer-sheet`);
+      customerSheetData.value = response.data;
+      await fetchMonthlySubscriptionAmounts(newVal);
+    } catch (error) {
+      console.error('Error fetching customer sheet data:', error);
+      customerSheetData.value = [];
+      monthlySubscriptionAmounts.value = {};
+    } finally {
+      loading.value = false;
+    }
+  } else {
+    customerSheetData.value = [];
+    monthlySubscriptionAmounts.value = {};
+  }
 });
 
-const allMembers = computed(() => {
-  const members = new Map<number, string>();
-  customerSheetData.value.forEach(row => {
-    members.set(row.member_id, row.member_name);
-  });
-  return (Array.from(
-    customerSheetData.value.reduce((acc: Map<number, string>, row: CustomerSheetRow) => {
-      if (!acc.has(row.member_id)) {
-        acc.set(row.member_id, row.member_name);
+const installmentAmount = (num: number) => {
+  // Only show the amount if it exists and is exported, otherwise show '-'
+  return typeof monthlySubscriptionAmounts.value[num] === 'number' && monthlySubscriptionAmounts.value[num] > 0
+    ? monthlySubscriptionAmounts.value[num]
+    : '-';
+};
+
+const memberTotals = computed(() => {
+  // For each member, calculate total paid and total balance
+  const totals: Record<number, { paid: number; balance: number }> = {};
+  allMembers.value.forEach((member: { id: number; name: string }) => {
+    let paid = 0;
+    let balance = 0;
+    exportedInstallmentNumbers.value.forEach(num => {
+      const row = customerSheetData.value.find(
+        (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
+      );
+      if (row) {
+        paid += row.total_paid;
+        balance += row.remaining_balance;
       }
-      return acc;
-    }, new Map<number, string>()).entries()
-  ) as [number, string][]).map(([id, name]) => ({ id, name }));
+    });
+    totals[member.id] = { paid, balance };
+  });
+  return totals;
 });
 
 watch(selectedGroupId, async (newVal) => {
@@ -92,10 +145,10 @@ function selectGroup(group: any) {
 function downloadAsPDF() {
   const doc = new jsPDF();
   autoTable(doc, {
-    head: [['Name', ...allInstallmentNumbers.value.map(num => `Installment ${num}`)]],
+    head: [['Name', ...exportedInstallmentNumbers.value.map(num => `Installment ${num}`)]],
     body: allMembers.value.map(member => [
       member.name,
-      ...allInstallmentNumbers.value.map(num => {
+      ...exportedInstallmentNumbers.value.map(num => {
         const row = customerSheetData.value.find(
           (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
         );
@@ -111,13 +164,13 @@ function downloadAsExcel() {
   const worksheet = workbook.addWorksheet('CustomerSheet');
 
   // Add header row
-  worksheet.addRow(['Name', ...allInstallmentNumbers.value.map(num => `Installment ${num}`)]);
+  worksheet.addRow(['Name', ...exportedInstallmentNumbers.value.map(num => `Installment ${num}`)]);
 
   // Add data rows
   allMembers.value.forEach(member => {
     const rowData = [
       member.name,
-      ...allInstallmentNumbers.value.map(num => {
+      ...exportedInstallmentNumbers.value.map(num => {
         const row = customerSheetData.value.find(
           (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
         );
@@ -135,6 +188,27 @@ function downloadAsExcel() {
     link.download = 'CustomerSheet.xlsx';
     link.click();
   });
+}
+
+// Add this computed property to get all members for the selected group
+const allMembers = computed(() => {
+  if (!selectedGroupId.value) return [];
+  // Get unique members from customerSheetData
+  const seen = new Set<number>();
+  return customerSheetData.value
+    .filter(row => {
+      if (seen.has(row.member_id)) return false;
+      seen.add(row.member_id);
+      return true;
+    })
+    .map(row => ({ id: row.member_id, name: row.member_name }));
+});
+
+// Helper to get a row for a member and installment, or undefined
+function getMemberInstallmentRow(memberId: number, installmentNum: number): CustomerSheetRow | undefined {
+  return customerSheetData.value.find(
+    (row: CustomerSheetRow) => row.member_id === memberId && row.installment_number === installmentNum
+  );
 }
 </script>
 
@@ -176,24 +250,35 @@ function downloadAsExcel() {
         <table class="cs-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th v-for="num in allInstallmentNumbers" :key="num">Installment {{ num }}</th>
+              <th rowspan="2">Name</th>
+              <th v-for="num in exportedInstallmentNumbers" :key="num" colspan="1">
+                Installment {{ num }}
+              </th>
+              <th rowspan="2">Total Paid</th>
+              <th rowspan="2">Total Balance</th>
+            </tr>
+            <tr>
+              <th v-for="num in exportedInstallmentNumbers" :key="'amt-' + num" style="font-size:0.95em; color:#1976d2; background:#e3f0fd; font-weight:600;">
+                ₹{{ installmentAmount(num).toLocaleString() }}
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="member in allMembers" :key="member.id">
               <td class="cs-name">{{ member.name }}</td>
-              <td v-for="num in allInstallmentNumbers" :key="num">
-                <span :class="isCompleted(customerSheetData.find((row: CustomerSheetRow) => row.member_id === member.id && row.installment_number === num)) ? 'paid' : 'unpaid'">
+              <td v-for="num in exportedInstallmentNumbers" :key="num">
+                <span :class="(() => { const row = getMemberInstallmentRow(member.id, num); return row && row.is_completed ? 'paid' : 'unpaid'; })()">
                   {{
-                  (() => {
-                    const row: CustomerSheetRow | undefined = customerSheetData.find((row: CustomerSheetRow) => row.member_id === member.id && row.installment_number === num);
-                    if (!row) return '-';
-                    return row.is_completed ? row.total_paid : row.remaining_balance;
-                  })()
+                    (() => {
+                      const row = getMemberInstallmentRow(member.id, num);
+                      if (!row) return '-';
+                      return row.is_completed ? row.total_paid : row.remaining_balance;
+                    })()
                   }}
                 </span>
               </td>
+              <td><b>₹{{ memberTotals[member.id]?.paid?.toLocaleString() || 0 }}</b></td>
+              <td><b>₹{{ memberTotals[member.id]?.balance?.toLocaleString() || 0 }}</b></td>
             </tr>
           </tbody>
         </table>

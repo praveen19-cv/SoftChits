@@ -284,6 +284,20 @@ const checkExportStatus = async (month: number) => {
   }
 }
 
+// Add API call to update is_exported in monthly_subscription table
+const setMonthExportStatus = async (month: number, isExported: boolean) => {
+  try {
+    loading.value = true;
+    await collectionsStore.setMonthlySubscriptionExportStatus(props.groupId, month, isExported);
+    months.value[month - 1].isExported = isExported;
+    showNotification(isExported ? 'Month marked as exported.' : 'Month export reset.');
+  } catch (error: any) {
+    showNotification(error.message || 'Failed to update export status', 'error');
+  } finally {
+    loading.value = false;
+  }
+};
+
 // Save all monthly data
 const saveMonthlyData = async () => {
   try {
@@ -353,37 +367,35 @@ const saveFirstMonthSubscription = async () => {
   }
 }
 
-// Modify export function to update status
+// Modify export function to update status in both backend and UI
 const exportMonthPayout = async (month: number) => {
   try {
-    loading.value = true
-    await collectionsStore.exportMonthPayout(props.groupId, month)
-    // Wait a bit for the backend to process
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    // Check the status again
-    await checkExportStatus(month)
-    showNotification('Month payout exported successfully')
+    loading.value = true;
+    await collectionsStore.exportMonthPayout(props.groupId, month);
+    await setMonthExportStatus(month, true);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await checkExportStatus(month);
+    showNotification('Month payout exported successfully');
   } catch (error: any) {
-    showNotification(error.message || 'Failed to export month payout', 'error')
+    showNotification(error.message || 'Failed to export month payout', 'error');
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
-// Modify reset function to update status
+// Modify reset function to update status in both backend and UI
 const resetMonthPayout = async (month: number) => {
   try {
-    loading.value = true
-    await collectionsStore.resetNextMonthPayout(props.groupId, month)
-    // Wait a bit for the backend to process
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    // Check the status again
-    await checkExportStatus(month)
-    showNotification('Month payout reset successfully')
+    loading.value = true;
+    await collectionsStore.resetNextMonthPayout(props.groupId, month);
+    await setMonthExportStatus(month, false);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await checkExportStatus(month);
+    showNotification('Month payout reset successfully');
   } catch (error: any) {
-    showNotification(error.message || 'Failed to reset month payout', 'error')
+    showNotification(error.message || 'Failed to reset month payout', 'error');
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
@@ -812,4 +824,4 @@ onMounted(loadData)
     grid-template-columns: 1fr;
   }
 }
-</style> 
+</style>

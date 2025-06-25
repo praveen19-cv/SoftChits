@@ -94,17 +94,27 @@ const showNotification = (message: string, type: 'success' | 'error' = 'success'
   }
 }
 
-// Modify loadData to check export status for valid months
+// Ensure commission percentage is fetched from the database and restrict changes if any group is exported
 const loadData = async () => {
   try {
     loading.value = true;
     await store.fetchGroupById(props.groupId);
     await store.fetchChitDates(props.groupId);
     await store.fetchMonthlySubscriptions(props.groupId);
-    
+
+    // Fetch commission percentage from the database
+    commissionPercentage.value = store.currentGroup?.commission_percentage ?? 4;
+
+    // Check if any group is exported
+    const isAnyGroupExported = (store.monthlySubscriptions as { is_exported?: boolean }[]).some(subscription => subscription.is_exported);
+    if (isAnyGroupExported) {
+      console.warn('Commission changes are restricted as one or more groups are exported.');
+      commissionPercentage.value = store.currentGroup?.commission_percentage || 4;
+    }
+
     // Initialize months data
     const numberOfMonths = (store.currentGroup?.number_of_months || 0) + 1;
-    const chitDates = store.chitDates;
+    const chitDates = store.chitDates.slice(0, -1); // Exclude the last chit date
     const startDate = new Date(store.currentGroup?.start_date || '');
 
     if (!store.currentGroup) {
@@ -116,12 +126,23 @@ const loadData = async () => {
     }
 
     // Try to fetch subscriptions
-    let subscriptions = store.monthlySubscriptions;
+    // Extend the type to include is_exported
+    type MonthlySubscription = {
+      month_number: number;
+      bid_amount: number;
+      total_dividend: number;
+      distributed_dividend: number;
+      monthly_subscription: number;
+      is_exported?: boolean;
+    };
+
+    // Type assertion so TypeScript knows about is_exported
+    let subscriptions = store.monthlySubscriptions as MonthlySubscription[];
     if (!subscriptions.length || subscriptions.length !== numberOfMonths) {
       // Create initial subscriptions
       const baseSubscription = store.currentGroup.total_amount / store.currentGroup.member_count;
       const commissionAmount = (store.currentGroup.total_amount * commissionPercentage.value) / 100;
-      
+
       // Ensure we create exactly numberOfMonths subscriptions
       subscriptions = Array(numberOfMonths).fill(null).map((_, index) => {
         if (index === 0) {
@@ -131,11 +152,12 @@ const loadData = async () => {
             bid_amount: 0,
             total_dividend: 0,
             distributed_dividend: 0,
-            monthly_subscription: baseSubscription
+            monthly_subscription: baseSubscription,
+            is_exported: false
           };
         } else {
-          // For months 2 to N+1, use chitDates[index-2] if available
-          const chitDateIndex = index - 2;
+          // For months 2 to N+1, use chitDates[index-1] if available
+          const chitDateIndex = index - 1;
           const chitDate = chitDates[chitDateIndex];
           const bidAmount = chitDate?.amount || 0;
           const totalDividend = bidAmount - commissionAmount;
@@ -147,7 +169,8 @@ const loadData = async () => {
             bid_amount: bidAmount,
             total_dividend: totalDividend,
             distributed_dividend: distributedDividend,
-            monthly_subscription: monthlySubscription
+            monthly_subscription: monthlySubscription,
+            is_exported: false
           };
         }
       });
@@ -172,7 +195,7 @@ const loadData = async () => {
       if (subscriptions.length < numberOfMonths) {
         const baseSubscription = store.currentGroup.total_amount / store.currentGroup.member_count;
         const commissionAmount = (store.currentGroup.total_amount * commissionPercentage.value) / 100;
-        
+
         // Add missing months
         for (let i = subscriptions.length; i < numberOfMonths; i++) {
           if (i === 0) {
@@ -186,7 +209,7 @@ const loadData = async () => {
             });
           } else {
             // For months 2 onwards
-            const chitDateIndex = i - 2;
+            const chitDateIndex = i - 1;
             const chitDate = chitDates[chitDateIndex];
             const bidAmount = chitDate?.amount || 0;
             const totalDividend = bidAmount - commissionAmount;
@@ -217,17 +240,17 @@ const loadData = async () => {
     }
 
     // Create months array with all months
-    months.value = Array(numberOfMonths).fill(null).map((_, index) => {
+    months.value = Array(numberOfMonths - 1).fill(null).map((_, index) => {
       const subscription = subscriptions.find(s => s.month_number === index + 1);
       let date = '';
-      
+
       if (index === 0) {
         // Month 1: One month before start date
         const month1Date = new Date(startDate);
         month1Date.setMonth(month1Date.getMonth() - 1);
         date = month1Date.toISOString().slice(0, 10);
       } else {
-        // For months 2 to N+1, use chitDates[index-1] if available
+        // For months 2 to N, use chitDates[index-1] if available
         const chitDateIndex = index - 1;
         const chitDate = chitDates[chitDateIndex];
         date = chitDate?.chit_date || '';
@@ -310,6 +333,8 @@ const saveMonthlyData = async () => {
       monthly_subscription: month.monthlySubscription
     }))
     
+    console.log('Subscriptions being sent to backend:', subscriptions);
+
     await store.updateMonthlySubscriptions(props.groupId, subscriptions)
     showNotification('Monthly data saved successfully')
   } catch (error: any) {
@@ -318,11 +343,6 @@ const saveMonthlyData = async () => {
     loading.value = false
   }
 }
-
-// Debounced save function for bid amount
-const debouncedSaveMonthlyData = debounce(() => {
-  saveMonthlyData();
-}, 500);
 
 // Add date formatting function
 const formatDate = (dateString: string) => {
@@ -367,15 +387,25 @@ const saveFirstMonthSubscription = async () => {
   }
 }
 
-// Modify export function to update status in both backend and UI
+// Modify export function to call backend API for exporting month payout and save all changes
 const exportMonthPayout = async (month: number) => {
   try {
-    loading.value = true;
-    await collectionsStore.exportMonthPayout(props.groupId, month);
-    await setMonthExportStatus(month, true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await checkExportStatus(month);
-    showNotification('Month payout exported successfully');
+    loading.value = true;    // First export the month with monthly subscription amount
+    const monthlySubscription = months.value[month - 1].monthlySubscription;
+    await collectionsStore.exportMonthPayout(props.groupId, month, monthlySubscription);
+    months.value[month - 1].isExported = true;
+    
+    // Then save all monthly data
+    const subscriptions = months.value.map((month, index) => ({
+      month_number: index + 1,
+      bid_amount: month.bidAmount,
+      total_dividend: month.totalDividend,
+      distributed_dividend: month.distributedDividend,
+      monthly_subscription: month.monthlySubscription
+    }));
+    
+    await store.updateMonthlySubscriptions(props.groupId, subscriptions);
+    showNotification('Month payout exported and all changes saved successfully');
   } catch (error: any) {
     showNotification(error.message || 'Failed to export month payout', 'error');
   } finally {
@@ -383,15 +413,32 @@ const exportMonthPayout = async (month: number) => {
   }
 }
 
-// Modify reset function to update status in both backend and UI
+// Modify reset function to update status in both backend and UI and save all changes
 const resetMonthPayout = async (month: number) => {
   try {
     loading.value = true;
+    
+    // First reset the month in backend
     await collectionsStore.resetNextMonthPayout(props.groupId, month);
-    await setMonthExportStatus(month, false);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await checkExportStatus(month);
-    showNotification('Month payout reset successfully');
+    
+    // After resetting in backend, update the UI state
+    months.value[month - 1].isExported = false;
+    
+    // Then save all monthly data
+    const subscriptions = months.value.map((month, index) => ({
+      month_number: index + 1,
+      bid_amount: month.bidAmount,
+      total_dividend: month.totalDividend,
+      distributed_dividend: month.distributedDividend,
+      monthly_subscription: month.monthlySubscription
+    }));
+    
+    await store.updateMonthlySubscriptions(props.groupId, subscriptions);
+    
+    // Call loadData to refresh the UI with the latest state from backend
+    await loadData();
+    
+    showNotification('Month payout reset and all changes saved successfully');
   } catch (error: any) {
     showNotification(error.message || 'Failed to reset month payout', 'error');
   } finally {
@@ -416,6 +463,7 @@ onMounted(loadData)
           max="100" 
           step="0.01"
           @input="calculateCommissionAmount"
+          :disabled="months.some(month => month.isExported)"
         />
         <span class="percentage-symbol">%</span>
       </div>
@@ -469,9 +517,9 @@ onMounted(loadData)
                 <div class="field">
                   <label>Bid Amount:</label>
                   <input 
-                    type="number"
-                    v-model="month.bidAmount"
-                    @input="() => { calculateMonthValues(index); debouncedSaveMonthlyData(); }"
+                    type="number" 
+                    v-model="month.bidAmount" 
+                    @input="() => { calculateMonthValues(index); }" 
                   />
                 </div>
                 <div class="field">

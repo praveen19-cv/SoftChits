@@ -20,19 +20,25 @@ const group = ref<CreateGroup>({
   start_date: '',
   end_date: '',
   status: 'active',
-  number_of_months: 0
+  number_of_months: 0,
+  commission_percentage: 0
 })
 
 // Function to calculate months between two dates
 function calculateMonths(startDate: string, endDate: string): number {
   if (!startDate || !endDate) return 0
-  
+
   const start = new Date(startDate)
   const end = new Date(endDate)
-  
-  const months = (end.getFullYear() - start.getFullYear()) * 12 + 
-                (end.getMonth() - start.getMonth())
-  
+
+  let months = (end.getFullYear() - start.getFullYear()) * 12 +
+               (end.getMonth() - start.getMonth())
+
+  // If end day is after or equal to start day, count as full month
+  if (end.getDate() >= start.getDate()) {
+    months += 1
+  }
+
   return Math.max(0, months)
 }
 
@@ -48,7 +54,25 @@ async function handleSubmit() {
   try {
     loading.value = true
     error.value = ''
-    await groupsStore.createGroup(group.value)
+    // Validate required fields and valid dates
+    const start = group.value.start_date && !isNaN(Date.parse(group.value.start_date)) ? group.value.start_date.trim() : ''
+    const end = group.value.end_date && !isNaN(Date.parse(group.value.end_date)) ? group.value.end_date.trim() : ''
+    if (!start || !end) {
+      error.value = 'Start Date and End Date are required and must be valid.'
+      notificationMessage.value = error.value
+      notificationType.value = 'error'
+      showNotification.value = true
+      loading.value = false
+      return
+    }
+    // Ensure number_of_months is up-to-date before submit
+    group.value.start_date = start
+    group.value.end_date = end
+    group.value.number_of_months = Number(calculateMonths(start, end))
+    await groupsStore.createGroup({
+      ...group.value,
+      number_of_months: Number(group.value.number_of_months)
+    })
     notificationMessage.value = 'Group created successfully!'
     notificationType.value = 'success'
     showNotification.value = true
@@ -163,6 +187,7 @@ async function handleSubmit() {
         </button>
       </div>
     </form>
+
 
     <StandardNotification
       :message="notificationMessage"
@@ -279,4 +304,4 @@ button:disabled {
   color: #6b7280;
   font-size: 0.875rem;
 }
-</style> 
+</style>

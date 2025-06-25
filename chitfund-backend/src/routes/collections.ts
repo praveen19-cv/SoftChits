@@ -1,7 +1,7 @@
 import express from 'express';
 import { getReadDb, getWriteDb, executeTransaction, Group } from '../database/setup';
 import { GroupTableService } from '../services/GroupTableService';
-import Database from 'better-sqlite3';
+import { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { dbPool } from '../database/connection';
 import { withRetry } from '../utils/dbUtils';
 
@@ -47,8 +47,8 @@ interface MemberBalance {
   member_name: string;
   installment_number: number;
   remaining_balance: number;
-  total_paid: number;
   is_completed: number;
+  total_paid: number;
 }
 
 interface BalanceResponse {
@@ -186,6 +186,7 @@ router.get('/:groupId/balances', async (req, res) => {
       return res.json([]); // Return empty array if table doesn't exist
     }
 
+    // Get balances with member names and remaining balance for each installment
     // Get balances with member names and remaining balance for each installment
     const balances = await withRetry(() => 
       db.prepare(`
@@ -510,8 +511,24 @@ router.post('/:groupId/create-table', async (req, res) => {
   }
 });
 
+// Ensure the correct schema for new collection_balance tabl
+
+// Example usage in routes
+router.post('/create-balance-table', async (req, res) => {
+  const db = getWriteDb();
+  const { group_id, group_name } = req.body;
+
+  try {
+    const balanceTableName = GroupTableService.getTableName(group_id, group_name, 'collection_balance');
+    res.status(201).json({ message: 'Balance table created successfully.' });
+  } catch (error) {
+    console.error('Error creating balance table:', error);
+    res.status(500).json({ error: 'Failed to create balance table.' });
+  }
+});
+
 // Helper function to ensure table has required columns
-async function ensureTableColumns(db: Database.Database, tableName: string) {
+async function ensureTableColumns(db: BetterSqliteDatabase, tableName: string) {
   try {
     // Use write connection for table alterations
     const writeDb = dbPool.getWriteConnection();
@@ -519,18 +536,60 @@ async function ensureTableColumns(db: Database.Database, tableName: string) {
     // Check if export_month column exists
     const hasExportMonth = await withRetry(() => 
       writeDb.prepare(`
-        SELECT name FROM pragma_table_info(?) 
+        SELECT name, type FROM pragma_table_info(?) 
         WHERE name = 'export_month'
-      `).get(tableName)
+      `).get(tableName) as {name: string, type: string} | undefined
     );
 
     if (!hasExportMonth) {
       await withRetry(() => 
         writeDb.prepare(`
           ALTER TABLE ${tableName}
-          ADD COLUMN export_month INTEGER
+          ADD COLUMN export_month NUMBER
         `).run()
       );
+    } else if (hasExportMonth.type !== 'NUMBER') {
+      // Need to recreate the table with correct column type
+      console.log(`Need to update export_month column type from ${hasExportMonth.type} to NUMBER`);
+      
+      // Get all column definitions
+      const columns = await withRetry(() => 
+        writeDb.prepare(`PRAGMA table_info(${tableName})`).all() as {name: string, type: string}[]
+      );
+      
+      // Create temporary table with correct column types
+      await withRetry(() => 
+        writeDb.prepare(`
+          CREATE TABLE ${tableName}_temp (
+            ${columns.map(col => {
+              if (col.name === 'export_month') {
+                return `${col.name} NUMBER`;
+              }
+              return `${col.name} ${col.type}`;
+            }).join(', ')}
+          )
+        `).run()
+      );
+      
+      // Copy data
+      await withRetry(() => 
+        writeDb.prepare(`
+          INSERT INTO ${tableName}_temp
+          SELECT * FROM ${tableName}
+        `).run()
+      );
+      
+      // Drop old table
+      await withRetry(() => 
+        writeDb.prepare(`DROP TABLE ${tableName}`).run()
+      );
+      
+      // Rename temp table
+      await withRetry(() => 
+        writeDb.prepare(`ALTER TABLE ${tableName}_temp RENAME TO ${tableName}`).run()
+      );
+      
+      console.log(`Updated export_month column type to NUMBER`);
     }
 
     // Check if is_exported column exists
@@ -575,33 +634,32 @@ router.get('/group/:groupId/next-month-status/:month', async (req, res) => {
     }
 
     // Get the dynamic table name
-    const balanceTableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection_balance');
+    const monthlySubscriptionTable = GroupTableService.getTableName(Number(groupId), group.name, 'monthly_subscription');
 
     // First check if the table exists
     const tableExists = await withRetry(() => 
       db.prepare(`
         SELECT name FROM sqlite_master 
         WHERE type='table' AND name=?
-      `).get(balanceTableName)
+      `).get(monthlySubscriptionTable)
     );
 
     if (!tableExists) {
       return res.json({ isExported: false });
     }
 
-    // Ensure table has required columns
-    await ensureTableColumns(db, balanceTableName);
-
-    // Check if any entries are exported for the month
-    const result = await withRetry(() => 
+    // Check if monthly_subscription has is_exported=1
+    const msStatus = await withRetry(() => 
       db.prepare(`
-        SELECT COUNT(*) as count
-        FROM ${balanceTableName}
-        WHERE group_id = ? AND export_month = ? AND is_exported = 1
-      `).get(groupId, month) as { count: number }
+        SELECT is_exported
+        FROM ${monthlySubscriptionTable}
+        WHERE group_id = ? AND month_number = ? AND is_exported = 1
+      `).get(groupId, month) as { is_exported: number } | undefined
     );
 
-    res.json({ isExported: result.count > 0 });
+    // Return true if ms is exported
+    res.json({ isExported: !!msStatus });
+
   } catch (error) {
     console.error('Error checking next month status:', error);
     res.status(500).json({ error: 'Failed to check next month status' });
@@ -610,16 +668,17 @@ router.get('/group/:groupId/next-month-status/:month', async (req, res) => {
 
 // Export next month payout
 router.post('/group/:groupId/export-month/:month', async (req, res) => {
-  const db = dbPool.getWriteConnection();
+  const db = getWriteDb();
   try {
     const groupId = Number(req.params.groupId);
     const month = Number(req.params.month);
+    const { monthly_subscription, total_amount, member_count } = req.body;
 
-    if (isNaN(groupId) || isNaN(month)) {
-      return res.status(400).json({ error: 'Invalid group ID or month' });
+    if (isNaN(groupId) || isNaN(month) || !monthly_subscription) {
+      return res.status(400).json({ error: 'Invalid group ID, month, or missing monthly subscription' });
     }
 
-    console.log(`Starting export for group ${groupId}, month ${month}`);
+    console.log(`Export request received for groupId: ${groupId}, month: ${month}, monthly subscription: ${monthly_subscription}`);
 
     // Get group details
     const group = await withRetry(() => 
@@ -633,125 +692,129 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
     console.log(`Found group: ${group.name}`);
 
     // Get the dynamic table names
+    const monthlySubscriptionTable = GroupTableService.getTableName(Number(groupId), group.name, 'monthly_subscription');
     const balanceTableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection_balance');
     const groupMembersTableName = GroupTableService.getTableName(Number(groupId), group.name, 'group_members');
+
+    console.log(`Using monthly subscription table: ${monthlySubscriptionTable}`);
     console.log(`Using balance table: ${balanceTableName}`);
     console.log(`Using group members table: ${groupMembersTableName}`);
 
-    // First check if the table exists
-    const tableExists = await withRetry(() => 
-      db.prepare(`
-        SELECT name FROM sqlite_master 
-        WHERE type='table' AND name=?
-      `).get(balanceTableName)
-    );
+    // Execute all updates in a transaction
+    await executeTransaction(db, async () => {
+      // 1. Get group members
+      const members = await withRetry(() => 
+        db.prepare(`
+          SELECT gm.member_id, m.name as member_name 
+          FROM ${groupMembersTableName} gm
+          JOIN members m ON m.id = gm.member_id
+          WHERE gm.group_id = ?
+        `).all(groupId) as { member_id: number, member_name: string }[]
+      );
 
-    if (!tableExists) {
-      console.log(`Creating new table: ${balanceTableName}`);
-      // Create the table if it doesn't exist
-      await GroupTableService.createGroupTables(groupId, group.name);
-    } else {
-      console.log(`Table exists, ensuring columns`);
-      // Ensure table has required columns
-      await ensureTableColumns(db, balanceTableName);
-    }
+      if (!members.length) {
+        throw new Error('No members found in group');
+      }
 
-    // Get all members for this group
-    const members = await withRetry(() => 
-      db.prepare(`
-        SELECT m.id as member_id
-        FROM members m
-        JOIN ${groupMembersTableName} gm ON m.id = gm.member_id
-        WHERE gm.group_id = ?
-      `).all(groupId) as GroupMember[]
-    );
+      // 2. Update monthly subscription table first
+      console.log(`Updating monthly_subscription table for groupId: ${groupId}, month: ${month}`);
+      
+      // Check if entry exists first
+      const existingMS = await withRetry(() => 
+        db.prepare(`
+          SELECT id 
+          FROM ${monthlySubscriptionTable}
+          WHERE group_id = ? AND month_number = ?
+        `).get(groupId, month)
+      );
+      
+      if (existingMS) {
+        // Update existing entry
+        const updateMSResult = await withRetry(() => 
+          db.prepare(`
+            UPDATE ${monthlySubscriptionTable}
+            SET is_exported = 1,
+                monthly_subscription = ?
+            WHERE group_id = ? AND month_number = ?
+          `).run(monthly_subscription, groupId, month)
+        );
+        console.log(`Updated monthly subscription table, rows affected: ${updateMSResult.changes}`);
+      } else {
+        // Insert new entry
+        await withRetry(() => 
+          db.prepare(`
+            INSERT INTO ${monthlySubscriptionTable} (
+              group_id, month_number, bid_amount, total_dividend, 
+              distributed_dividend, monthly_subscription, is_exported
+            ) VALUES (?, ?, 0, 0, 0, ?, 1)
+          `).run(groupId, month, monthly_subscription)
+        );
+        console.log(`Inserted new row in monthly subscription table for month ${month}`);
+      }
 
-    if (!members.length) {
-      console.error(`No members found for group ${groupId}`);
-      return res.status(404).json({ error: 'No members found for this group' });
-    }
+      // 3. First delete any existing collection_balance entries for this month
+      const deleteResult = await withRetry(() => 
+        db.prepare(`
+          DELETE FROM ${balanceTableName}
+          WHERE group_id = ? AND installment_number = ?
+        `).run(groupId, month)
+      );
+      
+      console.log(`Deleted ${deleteResult.changes} existing balance entries`);
 
-    console.log(`Found ${members.length} members`);
-
-    // Get monthly subscription amount
-    const monthlySubscription = await withRetry(() => 
-      db.prepare(`
-        SELECT monthly_subscription
-        FROM ${GroupTableService.getTableName(groupId, group.name, 'monthly_subscription')}
-        WHERE month_number = ?
-      `).get(month) as MonthlySubscription | undefined
-    );
-
-    if (!monthlySubscription) {
-      console.error(`Monthly subscription not found for month ${month}`);
-      return res.status(404).json({ error: 'Monthly subscription not found for this month' });
-    }
-
-    console.log(`Found monthly subscription: ${monthlySubscription.monthly_subscription}`);
-
-    // Create or update balances for all members
-    await executeTransaction(db, () => {
+      // 4. Create new collection balance entries for each member
       for (const member of members) {
-        try {
-          // Check if balance already exists
-          const existingBalance = db.prepare(`
-            SELECT id FROM ${balanceTableName}
-            WHERE group_id = ? AND member_id = ? AND installment_number = ?
-          `).get(groupId, member.member_id, month);
+        await withRetry(() => 
+          db.prepare(`
+            INSERT INTO ${balanceTableName} (
+              group_id, member_id, installment_number,
+              total_paid, remaining_balance, is_completed,
+              is_exported, export_month, last_updated
+            ) VALUES (?, ?, ?, 0, ?, 0, 1, ?, CURRENT_TIMESTAMP)
+          `).run(groupId, member.member_id, month, monthly_subscription, month)
+        );
+      }
 
-          if (existingBalance) {
-            console.log(`Updating existing balance for member ${member.member_id}`);
-            // Update existing balance
-            db.prepare(`
-              UPDATE ${balanceTableName}
-              SET export_month = ?,
-                  is_exported = 1,
-                  last_updated = CURRENT_TIMESTAMP
-              WHERE group_id = ? 
-              AND member_id = ? 
-              AND installment_number = ?
-            `).run(month, groupId, member.member_id, month);
-          } else {
-            console.log(`Creating new balance for member ${member.member_id}`);
-            // Insert new balance
-            db.prepare(`
-              INSERT INTO ${balanceTableName} (
-                group_id, member_id, installment_number,
-                total_paid, remaining_balance, is_completed,
-                export_month, is_exported
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(
-              groupId,
-              member.member_id,
-              month,
-              0, // total_paid
-              monthlySubscription.monthly_subscription, // remaining_balance
-              0, // is_completed
-              month, // export_month
-              1 // is_exported
-            );
-          }
-        } catch (error) {
-          console.error(`Error processing member ${member.member_id}:`, error);
-          throw error;
-        }
+      // 5. Verify the updates
+      const msVerifyResult = await withRetry(() => 
+        db.prepare(`
+          SELECT is_exported, monthly_subscription
+          FROM ${monthlySubscriptionTable}
+          WHERE group_id = ? AND month_number = ?
+        `).get(groupId, month) as { is_exported: number, monthly_subscription: number } | undefined
+      );
+
+      if (!msVerifyResult || msVerifyResult.is_exported !== 1) {
+        throw new Error('Failed to update monthly subscription is_exported flag');
+      }
+
+      // Verify collection balance entries
+      const balanceVerifyResult = await withRetry(() => 
+        db.prepare(`
+          SELECT COUNT(*) as count
+          FROM ${balanceTableName}
+          WHERE group_id = ? 
+            AND installment_number = ? 
+            AND is_exported = 1 
+            AND export_month = ?
+        `).get(groupId, month, month) as { count: number }
+      );
+
+      if (balanceVerifyResult.count !== members.length) {
+        throw new Error('Failed to update all collection balance entries');
       }
     });
 
-    console.log(`Successfully exported month ${month} for group ${groupId}`);
-    res.json({ message: 'Month payout exported successfully' });
-  } catch (error) {
-    console.error('Error exporting month payout:', error);
-    res.status(500).json({ 
-      error: 'Failed to export month payout',
-      details: error instanceof Error ? error.message : String(error)
-    });
+    res.json({ success: true, message: 'Month exported successfully' });
+  } catch (error: any) {
+    console.error('Error in export endpoint:', error);
+    res.status(500).json({ error: error.message || 'Failed to export month' });
   }
 });
 
 // Reset next month payout
 router.post('/group/:groupId/reset-next-month', async (req, res) => {
-  const db = dbPool.getWriteConnection();
+  const db = getWriteDb();
   try {
     const groupId = Number(req.params.groupId);
     const month = Number(req.body.month);
@@ -768,23 +831,82 @@ router.post('/group/:groupId/reset-next-month', async (req, res) => {
       return res.status(404).json({ error: 'Group not found' });
     }
 
-    // Get the dynamic table name
-    const balanceTableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection_balance');
+    // Get the dynamic table names
+    const monthlySubscriptionTable = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
+    const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
+    
+    console.log(`Starting reset for group ${groupId}, month ${month}`);
+    console.log(`Using monthly subscription table: ${monthlySubscriptionTable}`);
+    console.log(`Using balance table: ${balanceTableName}`);
 
-    // Reset export status for the specified month
-    await withRetry(() => 
-      db.prepare(`
-        UPDATE ${balanceTableName}
-        SET export_month = NULL,
-            is_exported = 0
-        WHERE group_id = ? AND export_month = ?
-      `).run(groupId, month)
-    );
+    // Execute all updates in a transaction
+    await executeTransaction(db, async () => {
+      // 1. First verify tables exist
+      const tables = await withRetry(() => 
+        db.prepare(`
+          SELECT name FROM sqlite_master 
+          WHERE type='table' AND (name = ? OR name = ?)
+        `).all(monthlySubscriptionTable, balanceTableName) as { name: string }[]
+      );
+      
+      if (tables.length !== 2) {
+        throw new Error(`Missing required tables. Found: ${tables.map(t => t.name).join(', ')}`);
+      }
 
-    res.json({ message: 'Next month payout reset successfully' });
-  } catch (error) {
-    console.error('Error resetting next month payout:', error);
-    res.status(500).json({ error: 'Failed to reset next month payout' });
+      // 2. Update is_exported in monthly subscription table
+      const updateMSResult = await withRetry(() => 
+        db.prepare(`
+          UPDATE ${monthlySubscriptionTable}
+          SET is_exported = 0
+          WHERE group_id = ? AND month_number = ?
+        `).run(groupId, month)
+      );
+      
+      console.log(`Reset is_exported flag in monthly subscription table, rows affected: ${updateMSResult.changes}`);
+
+      // 3. DELETE collection balance entries instead of updating them
+      const deleteBalanceResult = await withRetry(() => 
+        db.prepare(`
+          DELETE FROM ${balanceTableName}
+          WHERE group_id = ? AND installment_number = ?
+        `).run(groupId, month)
+      );
+      
+      console.log(`Deleted ${deleteBalanceResult.changes} collection balance entries`);
+
+      // 4. Verify the updates
+      const msVerifyResult = await withRetry(() => 
+        db.prepare(`
+          SELECT is_exported
+          FROM ${monthlySubscriptionTable}
+          WHERE group_id = ? AND month_number = ?
+        `).get(groupId, month) as { is_exported: number } | undefined
+      );
+
+      if (!msVerifyResult) {
+        console.log("No monthly subscription entry found to verify reset");
+      } else if (msVerifyResult.is_exported !== 0) {
+        throw new Error('Failed to reset monthly subscription is_exported flag');
+      }
+
+      // Verify collection balance entries were deleted
+      const balanceVerifyResult = await withRetry(() => 
+        db.prepare(`
+          SELECT COUNT(*) as count
+          FROM ${balanceTableName}
+          WHERE group_id = ? AND installment_number = ?
+        `).get(groupId, month) as { count: number }
+      );
+
+      if (balanceVerifyResult.count > 0) {
+        throw new Error('Failed to delete collection balance entries');
+      }
+    });
+
+    res.json({ success: true, message: 'Month reset successfully' });
+  } catch (error: any) {
+    console.error('Error in reset endpoint:', error);
+    res.status(500).json({ error: error.message || 'Failed to reset month' });
   }
 });
 
@@ -895,19 +1017,104 @@ router.put('/:groupId/monthly-subscription/:month/export', async (req, res) => {
     `).get(monthlySubscriptionTable);
     if (!tableExists) {
       return res.status(404).json({ error: 'Monthly subscription table not found' });
-    }
-    // Update is_exported for the month
-    await withRetry(() =>
+    }    // Update is_exported for the month and verify the update
+    await executeTransaction(db, async () => {
+      const updateResult = await withRetry(() =>
+        db.prepare(`          UPDATE ${monthlySubscriptionTable}
+          SET is_exported = ?
+          WHERE group_id = ? AND month_number = ?
+        `).run(is_exported ? 1 : 0, groupId, month)
+      );
+      
+      console.log(`Updated ${updateResult.changes} rows in monthly subscription table`);      // Verify the update was successful
+      const verifyResult = await withRetry(() =>
+        db.prepare(`          SELECT is_exported
+          FROM ${monthlySubscriptionTable}
+          WHERE group_id = ? AND month_number = ?
+        `).get(groupId, month) as { is_exported: number }
+      );
+
+      console.log('Verification result:', verifyResult);
+
+      if (!verifyResult || verifyResult.is_exported !== (is_exported ? 1 : 0)) {
+        throw new Error('Failed to update monthly subscription status');
+      }
+    });
+
+    // Read back the updated data to send in response
+    const updatedData = await withRetry(() =>
       db.prepare(`
-        UPDATE ${monthlySubscriptionTable}
-        SET is_exported = ?
+        SELECT month_number, monthly_subscription, is_exported
+        FROM ${monthlySubscriptionTable}
         WHERE month_number = ?
-      `).run(is_exported ? 1 : 0, month)
+      `).get(month)
     );
-    res.json({ message: 'Export status updated successfully' });
+
+    res.json({
+      message: 'Export status updated successfully',
+      data: updatedData
+    });
   } catch (error) {
     console.error('Error updating export status:', error);
     res.status(500).json({ error: 'Failed to update export status' });
+  }
+});
+
+// Update schema for collection_balance_groupid_groupname table
+// Remove and re-add columns: collection_amount, updated_remaining_balance, collection_date
+// Ensure proper column definitions
+router.post('/update-schema/:groupId', async (req, res) => {
+  const db = getWriteDb();
+  try {
+    const groupId = Number(req.params.groupId);
+    if (isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid group ID' });
+    }
+
+    // Get group details
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
+    );
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Get the dynamic balance table name
+    const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
+
+    // Check if table exists
+    const tableExists = await withRetry(() => 
+      db.prepare(`
+        SELECT name FROM sqlite_master 
+        WHERE type='table' AND name=?
+      `).get(balanceTableName)
+    );
+
+    if (!tableExists) {
+      return res.status(404).json({ error: 'Balance table not found' });
+    }
+
+    // Begin transaction
+    await executeTransaction(db, () => {
+      // Remove existing columns
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS temp_table AS
+        SELECT id, group_id, member_id, installment_number, total_paid, remaining_balance, is_completed, last_updated
+        FROM ${balanceTableName}
+      `).run();
+
+      db.prepare(`DROP TABLE ${balanceTableName}`).run();
+
+      db.prepare(`
+        ALTER TABLE temp_table
+        RENAME TO ${balanceTableName}
+      `).run();
+    });
+
+    res.json({ message: 'Schema updated successfully' });
+  } catch (error) {
+    console.error('Error updating schema:', error);
+    res.status(500).json({ error: 'Failed to update schema' });
   }
 });
 

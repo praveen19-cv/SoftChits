@@ -20,15 +20,18 @@ export class GroupTableService {
       db.prepare(`
         CREATE TABLE IF NOT EXISTS ${collectionsTableName} (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
+          collection_date TEXT NOT NULL,
           group_id INTEGER NOT NULL,
           member_id INTEGER NOT NULL,
-          amount REAL NOT NULL,
-          collection_date TEXT NOT NULL,
-          month_number INTEGER NOT NULL,
+          installment_number INTEGER NOT NULL,
+          collection_amount DECIMAL(10,2) NOT NULL,
+          remaining_balance DECIMAL(10,2) NOT NULL,
+          is_completed BOOLEAN NOT NULL DEFAULT FALSE,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_remaining_balance REAL,
-          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (group_id) REFERENCES groups(id),
-          FOREIGN KEY (member_id) REFERENCES members(id)
+          FOREIGN KEY (member_id) REFERENCES members(id),
+          UNIQUE(group_id, member_id, installment_number)
         )
       `).run();
       tables.push(collectionsTableName);
@@ -41,15 +44,12 @@ export class GroupTableService {
           group_id INTEGER NOT NULL,
           member_id INTEGER NOT NULL,
           installment_number INTEGER NOT NULL,
-          total_paid REAL NOT NULL DEFAULT 0,
-          remaining_balance REAL NOT NULL DEFAULT 0,
-          is_completed BOOLEAN NOT NULL DEFAULT 0,
+          total_paid DECIMAL(10,2) DEFAULT 0,
+          remaining_balance DECIMAL(10,2) DEFAULT 0,
+          is_completed BOOLEAN DEFAULT 0,
+          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           export_month INTEGER,
-          is_exported BOOLEAN NOT NULL DEFAULT 0,
-          last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (group_id) REFERENCES groups(id),
-          FOREIGN KEY (member_id) REFERENCES members(id),
-          UNIQUE(group_id, member_id, installment_number)
+          is_exported BOOLEAN DEFAULT 0
         )
       `).run();
       tables.push(collectionBalancesTableName);
@@ -132,4 +132,5 @@ export class GroupTableService {
       subscriptionsTable: this.getTableName(groupId, groupName, 'monthly_subscription')
     };
   }
+
 }

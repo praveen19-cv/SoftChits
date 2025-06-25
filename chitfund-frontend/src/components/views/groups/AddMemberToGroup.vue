@@ -103,9 +103,6 @@ async function loadMembers() {
     loading.value = true
     error.value = ''
     
-    // Fetch group details
-    groupDetails.value = await store.fetchGroupById(props.groupId)
-    
     // Fetch available members
     const response = await fetch('/api/members/available')
     if (!response.ok) {
@@ -121,6 +118,17 @@ async function loadMembers() {
     loading.value = false
   }
 }
+
+const loadGroupDetails = async () => {
+  try {
+    groupDetails.value = await store.fetchGroupById(props.groupId);
+    groupDetails.value.member_count = groupDetails.value.member_count; // Ensure member count is fetched from the group creation
+  } catch (err) {
+    console.error('Error fetching group details:', err);
+    error.value = 'Failed to fetch group details. Please try again.';
+    showNotification('Failed to fetch group details', 'error');
+  }
+};
 
 async function handleSubmit() {
   try {
@@ -154,7 +162,10 @@ async function handleSubmit() {
   }
 }
 
-onMounted(loadMembers)
+onMounted(() => {
+  loadGroupDetails();
+  loadMembers();
+});
 </script>
 
 <style scoped>
@@ -273,4 +284,4 @@ label {
   border-radius: 4px;
   margin-bottom: 1rem;
 }
-</style> 
+</style>

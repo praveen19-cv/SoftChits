@@ -9,15 +9,17 @@ interface Group {
   member_count: number;
   start_date: string;
   end_date: string;
-  commission_percentage: number;
-  created_at: string;
-  updated_at: string;
+  status: string;
+  number_of_months: number;
+  commission_percentage?: number; // Added commission_percentage
+  created_at?: string;
+  updated_at?: string;
 }
 
 const router = express.Router();
 
-// Helper function to retry database operations
-async function withRetry<T>(operation: () => T, maxRetries = 3): Promise<T> {
+// Enhanced retry logic with increased retries and logging for SQLITE_BUSY errors.
+async function withRetry<T>(operation: () => T, maxRetries = 5): Promise<T> {
   let lastError;
   for (let i = 0; i < maxRetries; i++) {
     try {
@@ -25,21 +27,28 @@ async function withRetry<T>(operation: () => T, maxRetries = 3): Promise<T> {
     } catch (error: any) {
       lastError = error;
       if (error.code === 'SQLITE_BUSY') {
-        // Wait for a short time before retrying (exponential backoff)
-        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 100));
+        console.warn(`SQLITE_BUSY detected. Retry attempt ${i + 1} of ${maxRetries}`);
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 200)); // Exponential backoff
         continue;
       }
       throw error;
     }
   }
+  console.error('SQLITE_BUSY error persisted after maximum retries:', lastError);
   throw lastError;
 }
 
 // Helper function to execute transactions with retry
 async function executeTransaction<T>(db: any, operation: () => T): Promise<T> {
-  return withRetry(() => {
-    return db.transaction(operation)();
-  });
+  try {
+    console.log('Starting transaction...');
+    const result = await withRetry(() => db.transaction(operation)());
+    console.log('Transaction completed successfully.');
+    return result;
+  } catch (error) {
+    console.error('Transaction failed:', error);
+    throw error;
+  }
 }
 
 // Get all groups
@@ -77,13 +86,13 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const db = dbPool.getWriteConnection();
   try {
-    const { name, total_amount, member_count, start_date, end_date } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, number_of_months } = req.body;
     
     const result = await withRetry(() => 
       db.prepare(`
-        INSERT INTO groups (name, total_amount, member_count, start_date, end_date)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(name, total_amount, member_count, start_date, end_date)
+        INSERT INTO groups (name, total_amount, member_count, start_date, end_date, number_of_months)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(name, total_amount, member_count, start_date, end_date, number_of_months)
     );
 
     const newGroup = await withRetry(() => 
@@ -513,4 +522,4 @@ router.post('/:id/create-tables', async (req, res) => {
   }
 });
 
-export default router; 
+export default router;

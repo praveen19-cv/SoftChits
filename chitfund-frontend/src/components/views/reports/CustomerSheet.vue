@@ -210,6 +210,7 @@ function getMemberInstallmentRow(memberId: number, installmentNum: number): Cust
     (row: CustomerSheetRow) => row.member_id === memberId && row.installment_number === installmentNum
   );
 }
+
 </script>
 
 <template>

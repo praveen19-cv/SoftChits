@@ -67,6 +67,7 @@ export async function initializeDatabase() {
         member_count INTEGER NOT NULL,
         start_date TEXT NOT NULL,
         end_date TEXT NOT NULL,
+        number_of_months INTEGER NOT NULL DEFAULT 0,
         commission_percentage REAL DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP

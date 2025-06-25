@@ -139,34 +139,30 @@ async function saveChitDates() {
 // New: export chitDates as monthly bid_amounts
 async function exportAsBidAmounts() {
   try {
-    // Fetch existing monthly subscriptions
-    const subs = await store.fetchMonthlySubscriptions(Number(props.groupId))
-    // Map chitDates to subscription bid_amount, starting from month 2
+    const subs = await store.fetchMonthlySubscriptions(Number(props.groupId));
     const updated = subs.map(sub => {
       if (sub.month_number === 1) {
-        // Month 1 should have 0 bid amount
         return {
           ...sub,
           bid_amount: 0,
           total_dividend: 0,
           distributed_dividend: 0
-        }
+        };
       } else {
-        // For months 2 onwards, use chitDates array
-        const chitDateIndex = sub.month_number - 2
-        const chitDate = chitDates.value[chitDateIndex]
-        const bidAmount = chitDate?.amount || 0
+        const chitDateIndex = sub.month_number - 2;
+        const chitDate = chitDates.value[chitDateIndex];
+        const bidAmount = chitDate?.amount || 0;
         return {
           ...sub,
           bid_amount: bidAmount
-        }
+        };
       }
-    })
-    // Update backend
-    await store.updateMonthlySubscriptions(Number(props.groupId), updated)
-    showNotification('Bid amounts exported to monthly subscriptions')
-  } catch (error: any) {
-    showNotification(error.message || 'Failed to export bid amounts', 'error')
+    });
+    await store.updateMonthlySubscriptions(Number(props.groupId), updated);
+    showNotification('Bid amounts exported to monthly subscriptions');
+  } catch (error) {
+    const errMsg = (error && typeof error === 'object' && 'message' in error) ? (error as any).message : 'Failed to export bid amounts';
+    showNotification(errMsg, 'error');
   }
 }
 
@@ -331,4 +327,4 @@ h4 {
   outline: 0;
   box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
 }
-</style> 
+</style>

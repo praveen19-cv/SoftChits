@@ -21,6 +21,7 @@ export interface Group {
   number_of_months: number;
   created_at?: string;
   updated_at?: string;
+  commission_percentage: number;
 }
 
 export interface CreateGroup {
@@ -31,6 +32,7 @@ export interface CreateGroup {
   end_date: string;
   status: string;
   number_of_months: number;
+  commission_percentage: number;
 }
 
 interface ChitDate {
@@ -388,4 +390,4 @@ export const useGroupsStore = defineStore('groups', {
       }
     }
   }
-}); 
+});

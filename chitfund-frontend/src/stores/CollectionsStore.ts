@@ -285,7 +285,19 @@ export const useCollectionsStore = defineStore('collections', () => {
       loading.value = true;
       error.value = '';
       
-      const response = await api.post(`/collections/group/${groupId}/reset-next-month`, { month });
+      const response = await api.post(`/collections/group/${groupId}/reset-next-month`, { 
+        month,
+        group_id: groupId
+      });
+      
+      if (response.data.success) {
+        // Also update local state
+        const collectionIndex = collections.value.findIndex(c => c.group_id === groupId && c.installment_number === month);
+        if (collectionIndex !== -1) {
+          collections.value[collectionIndex].is_completed = 0;
+        }
+      }
+      
       return response.data;
     } catch (error: any) {
       console.error('Error resetting next month payout:', error);
@@ -310,12 +322,35 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
-  async function exportMonthPayout(groupId: number, month: number) {
+  async function exportMonthPayout(groupId: number, month: number, monthlySubscription?: number) {
     try {
       loading.value = true;
       error.value = '';
       
-      const response = await api.post(`/collections/group/${groupId}/export-month/${month}`);
+      // Get the current group to ensure we have the latest data
+      await groupsStore.fetchGroupById(groupId);
+      const group = groupsStore.currentGroup;
+      
+      if (!group) {
+        throw new Error('Group not found');
+      }
+      
+      const response = await api.post(`/collections/group/${groupId}/export-month/${month}`, {
+        group_id: groupId,
+        month_number: month,
+        monthly_subscription: monthlySubscription,
+        total_amount: group.total_amount,
+        member_count: group.member_count
+      });
+
+      if (response.data.success) {
+        // Update local state if needed
+        const collectionIndex = collections.value.findIndex(c => c.group_id === groupId && c.installment_number === month);
+        if (collectionIndex !== -1) {
+          collections.value[collectionIndex].is_completed = 1;
+        }
+      }
+
       return response.data;
     } catch (error: any) {
       console.error('Error exporting month payout:', error);

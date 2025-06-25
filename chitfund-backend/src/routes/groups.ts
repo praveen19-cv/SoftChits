@@ -461,23 +461,37 @@ router.put('/:id/monthly-subscriptions', async (req, res) => {
     );
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
-    }
-
-    // Get the dynamic table name for monthly subscriptions
+    }    // Get the dynamic table name for monthly subscriptions
     const subscriptionsTableName = GroupTableService.getTableName(id, group.name, 'monthly_subscription');
+
+    // First, get existing export status for all months to preserve them
+    const existingExportStatus = await withRetry(() => 
+      db.prepare(`
+        SELECT month_number, is_exported 
+        FROM ${subscriptionsTableName} 
+        WHERE group_id = ?
+      `).all(id) as { month_number: number, is_exported: number }[]
+    );
+
+    // Create a map for quick lookup
+    const exportStatusMap = new Map<number, number>();
+    existingExportStatus.forEach(row => {
+      exportStatusMap.set(row.month_number, row.is_exported);
+    });
 
     // Delete existing subscriptions for this group
     await withRetry(() => 
       db.prepare(`DELETE FROM ${subscriptionsTableName} WHERE group_id = ?`).run(id)
     );
 
-    // Insert new subscriptions
+    // Insert new subscriptions while preserving export status
     for (const sub of subscriptions) {
+      const preservedExportStatus = exportStatusMap.get(sub.month_number) || 0;
       await withRetry(() => 
         db.prepare(`
-          INSERT INTO ${subscriptionsTableName} (group_id, month_number, bid_amount, total_dividend, distributed_dividend, monthly_subscription, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(id, sub.month_number, sub.bid_amount || 0, sub.total_dividend || 0, sub.distributed_dividend || 0, sub.monthly_subscription || 0, new Date().toISOString())
+          INSERT INTO ${subscriptionsTableName} (group_id, month_number, bid_amount, total_dividend, distributed_dividend, monthly_subscription, is_exported, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(id, sub.month_number, sub.bid_amount || 0, sub.total_dividend || 0, sub.distributed_dividend || 0, sub.monthly_subscription || 0, preservedExportStatus, new Date().toISOString())
       );
     }
 

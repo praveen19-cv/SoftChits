@@ -46,6 +46,7 @@ interface MonthlySubscription {
   total_dividend: number;
   distributed_dividend: number;
   monthly_subscription: number;
+  is_exported?: boolean | number;
 }
 
 interface GroupState {

@@ -139,27 +139,57 @@ async function saveChitDates() {
 // New: export chitDates as monthly bid_amounts
 async function exportAsBidAmounts() {
   try {
+    // Fetch current group details to get commission percentage and other data
+    await store.fetchGroupById(Number(props.groupId));
+    const group = store.currentGroup;
+    
+    if (!group) {
+      throw new Error('Group details not found');
+    }
+    
     const subs = await store.fetchMonthlySubscriptions(Number(props.groupId));
+    
+    // Calculate commission amount
+    const commissionAmount = (group.total_amount * group.commission_percentage) / 100;
+    const baseSubscription = group.total_amount / group.member_count;
+    
     const updated = subs.map(sub => {
       if (sub.month_number === 1) {
+        // Month 1: Keep existing subscription, zero other fields
         return {
           ...sub,
           bid_amount: 0,
           total_dividend: 0,
-          distributed_dividend: 0
+          distributed_dividend: 0,
+          monthly_subscription: baseSubscription
         };
       } else {
+        // For other months: calculate based on bid amount
         const chitDateIndex = sub.month_number - 2;
         const chitDate = chitDates.value[chitDateIndex];
         const bidAmount = chitDate?.amount || 0;
+        
+        // Calculate total dividend (bid amount - commission)
+        const totalDividend = bidAmount - commissionAmount;
+        
+        // Calculate distributed dividend (total dividend / member count)
+        const distributedDividend = totalDividend / group.member_count;
+        
+        // Calculate monthly subscription (base subscription - distributed dividend)
+        const monthlySubscription = baseSubscription - distributedDividend;
+        
         return {
           ...sub,
-          bid_amount: bidAmount
+          bid_amount: bidAmount,
+          total_dividend: totalDividend,
+          distributed_dividend: distributedDividend,
+          monthly_subscription: monthlySubscription
         };
       }
     });
+    
     await store.updateMonthlySubscriptions(Number(props.groupId), updated);
-    showNotification('Bid amounts exported to monthly subscriptions');
+    showNotification('Bid amounts exported to monthly subscriptions with calculated dividends');
   } catch (error) {
     const errMsg = (error && typeof error === 'object' && 'message' in error) ? (error as any).message : 'Failed to export bid amounts';
     showNotification(errMsg, 'error');

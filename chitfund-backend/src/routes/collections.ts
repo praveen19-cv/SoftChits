@@ -633,8 +633,10 @@ router.get('/group/:groupId/next-month-status/:month', async (req, res) => {
       return res.status(404).json({ error: 'Group not found' });
     }
 
-    // Get the dynamic table name
+    // Get the dynamic table name for monthly_subscription
     const monthlySubscriptionTable = GroupTableService.getTableName(Number(groupId), group.name, 'monthly_subscription');
+    
+    console.log(`Checking export status for group ${groupId}, month ${month} in table ${monthlySubscriptionTable}`);
 
     // First check if the table exists
     const tableExists = await withRetry(() => 
@@ -645,20 +647,28 @@ router.get('/group/:groupId/next-month-status/:month', async (req, res) => {
     );
 
     if (!tableExists) {
+      console.log(`Table ${monthlySubscriptionTable} does not exist`);
       return res.json({ isExported: false });
     }
 
-    // Check if monthly_subscription has is_exported=1
-    const msStatus = await withRetry(() => 
+    // Check if monthly_subscription record exists for this month
+    const msRecord = await withRetry(() => 
       db.prepare(`
         SELECT is_exported
         FROM ${monthlySubscriptionTable}
-        WHERE group_id = ? AND month_number = ? AND is_exported = 1
+        WHERE group_id = ? AND month_number = ?
       `).get(groupId, month) as { is_exported: number } | undefined
     );
 
-    // Return true if ms is exported
-    res.json({ isExported: !!msStatus });
+    if (!msRecord) {
+      console.log(`No monthly subscription record found for group ${groupId}, month ${month}`);
+      return res.json({ isExported: false });
+    }
+
+    console.log(`Monthly subscription export status for group ${groupId}, month ${month}: ${msRecord.is_exported}`);
+
+    // Return true if is_exported is 1
+    res.json({ isExported: msRecord.is_exported === 1 });
 
   } catch (error) {
     console.error('Error checking next month status:', error);
@@ -672,7 +682,7 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
   try {
     const groupId = Number(req.params.groupId);
     const month = Number(req.params.month);
-    const { monthly_subscription, total_amount, member_count } = req.body;
+    const { monthly_subscription } = req.body;
 
     if (isNaN(groupId) || isNaN(month) || !monthly_subscription) {
       return res.status(400).json({ error: 'Invalid group ID, month, or missing monthly subscription' });
@@ -728,6 +738,8 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
         `).get(groupId, month)
       );
       
+      console.log('existingMS:', existingMS);
+      
       if (existingMS) {
         // Update existing entry
         const updateMSResult = await withRetry(() => 
@@ -739,6 +751,35 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
           `).run(monthly_subscription, groupId, month)
         );
         console.log(`Updated monthly subscription table, rows affected: ${updateMSResult.changes}`);
+
+        // Immediately check the row after update
+        const msCheck = await withRetry(() =>
+          db.prepare(`
+            SELECT * FROM ${monthlySubscriptionTable}
+            WHERE group_id = ? AND month_number = ?
+          `).get(groupId, month)
+        );
+        console.log('After update, msCheck:', msCheck);
+
+        // If update did not affect any rows, force an insert
+        if (updateMSResult.changes === 0) {
+          console.log('Update did not affect any rows, forcing insert.');
+          await withRetry(() =>
+            db.prepare(`
+              INSERT INTO ${monthlySubscriptionTable} (
+                group_id, month_number, bid_amount, total_dividend, 
+                distributed_dividend, monthly_subscription, is_exported
+              ) VALUES (?, ?, 0, 0, 0, ?, 1)
+            `).run(groupId, month, monthly_subscription)
+          );
+          const msCheckAfterInsert = await withRetry(() =>
+            db.prepare(`
+              SELECT * FROM ${monthlySubscriptionTable}
+              WHERE group_id = ? AND month_number = ?
+            `).get(groupId, month)
+          );
+          console.log('After forced insert, msCheck:', msCheckAfterInsert);
+        }
       } else {
         // Insert new entry
         await withRetry(() => 
@@ -751,6 +792,12 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
         );
         console.log(`Inserted new row in monthly subscription table for month ${month}`);
       }
+
+      // DEBUG: Print all rows for this group after update/insert
+      const allRowsAfter = await withRetry(() =>
+        db.prepare(`SELECT * FROM ${monthlySubscriptionTable} WHERE group_id = ? ORDER BY month_number`).all(groupId)
+      );
+      console.log('All rows after update/insert:', allRowsAfter);
 
       // 3. First delete any existing collection_balance entries for this month
       const deleteResult = await withRetry(() => 

@@ -265,96 +265,65 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
-  async function exportNextMonthPayout(groupId: number, month: number) {
+  // Export next month payout API call (creates installments and sets is_exported=1)
+  async function exportNextMonthPayout(groupId: number, month: number, monthlySubscription: number) {
     try {
       loading.value = true;
       error.value = '';
-      
-      const response = await api.post(`/collections/group/${groupId}/export-next-month`, { month });
+      const response = await api.post(`/collections/group/${groupId}/export-month/${month}`, {
+        monthly_subscription: monthlySubscription
+      });
       return response.data;
-    } catch (error: any) {
-      console.error('Error exporting next month payout:', error);
-      throw new Error(error.response?.data?.error || 'Failed to export next month payout');
+    } catch (err: any) {
+      error.value = err.response?.data?.error || 'Failed to export month payout';
+      throw err;
     } finally {
       loading.value = false;
     }
   }
 
+  // Reset next month payout API call (removes installments and sets is_exported=0)
   async function resetNextMonthPayout(groupId: number, month: number) {
     try {
       loading.value = true;
       error.value = '';
-      
-      const response = await api.post(`/collections/group/${groupId}/reset-next-month`, { 
-        month,
-        group_id: groupId
+      const response = await api.post(`/collections/group/${groupId}/reset-next-month`, {
+        month: month
       });
-      
-      if (response.data.success) {
-        // Also update local state
-        const collectionIndex = collections.value.findIndex(c => c.group_id === groupId && c.installment_number === month);
-        if (collectionIndex !== -1) {
-          collections.value[collectionIndex].is_completed = 0;
-        }
-      }
-      
       return response.data;
-    } catch (error: any) {
-      console.error('Error resetting next month payout:', error);
-      throw new Error(error.response?.data?.error || 'Failed to reset next month payout');
+    } catch (err: any) {
+      error.value = err.response?.data?.error || 'Failed to reset month payout';
+      throw err;
     } finally {
       loading.value = false;
     }
   }
 
-  async function getNextMonthStatus(groupId: number, month: number) {
+  // Get next month export status
+  async function getNextMonthStatus(groupId: number, month: number): Promise<boolean> {
     try {
-      loading.value = true;
-      error.value = '';
-      
       const response = await api.get(`/collections/group/${groupId}/next-month-status/${month}`);
-      return response.data.isExported;
-    } catch (error: any) {
-      console.error('Error checking next month status:', error);
-      throw new Error(error.response?.data?.error || 'Failed to check next month status');
-    } finally {
-      loading.value = false;
+      return response.data.is_exported === 1;
+    } catch (err: any) {
+      error.value = err.response?.data?.error || 'Failed to get next month status';
+      throw err;
     }
   }
 
-  async function exportMonthPayout(groupId: number, month: number, monthlySubscription?: number) {
+  // Export month payout (alias for exportNextMonthPayout for compatibility)
+  async function exportMonthPayout(groupId: number, month: number, monthlySubscription: number) {
+    return exportNextMonthPayout(groupId, month, monthlySubscription);
+  }
+
+  // Set is_exported for a monthly subscription (backend API call)
+  async function setMonthlySubscriptionExportStatus(groupId: number, month: number, isExported: boolean) {
     try {
       loading.value = true;
       error.value = '';
-      
-      // Get the current group to ensure we have the latest data
-      await groupsStore.fetchGroupById(groupId);
-      const group = groupsStore.currentGroup;
-      
-      if (!group) {
-        throw new Error('Group not found');
-      }
-      
-      const response = await api.post(`/collections/group/${groupId}/export-month/${month}`, {
-        group_id: groupId,
-        month_number: month,
-        monthly_subscription: monthlySubscription,
-        total_amount: group.total_amount,
-        member_count: group.member_count
-      });
-
-      if (response.data.success) {
-        // Update local state if needed
-        const collectionIndex = collections.value.findIndex(c => c.group_id === groupId && c.installment_number === month);
-        if (collectionIndex !== -1) {
-          collections.value[collectionIndex].is_completed = 1;
-        }
-      }
-
-      return response.data;
-    } catch (error: any) {
-      console.error('Error exporting month payout:', error);
-      throw new Error(error.response?.data?.error || 'Failed to export month payout');
+      await api.put(`/collections/${groupId}/monthly-subscription/${month}/export`, { is_exported: isExported });
+    } catch (err: any) {
+      error.value = err.response?.data?.message || 'Failed to update export status';
+      throw err;
     } finally {
       loading.value = false;
     }
@@ -415,20 +384,6 @@ export const useCollectionsStore = defineStore('collections', () => {
       return response.data // Should be an array of pending installments
     } catch (error) {
       throw error
-    }
-  }
-
-  // Set is_exported for a monthly subscription (backend API call)
-  async function setMonthlySubscriptionExportStatus(groupId: number, month: number, isExported: boolean) {
-    try {
-      loading.value = true;
-      error.value = '';
-      await api.put(`/collections/${groupId}/monthly-subscription/${month}/export`, { is_exported: isExported });
-    } catch (err: any) {
-      error.value = err.response?.data?.message || 'Failed to update export status';
-      throw err;
-    } finally {
-      loading.value = false;
     }
   }
 

@@ -169,6 +169,24 @@ export const useGroupsStore = defineStore('groups', {
         console.error('Error fetching group:', error);
         this.error = error instanceof Error ? error.message : 'Unknown error';
         this.currentGroup = null;
+        throw error;      } finally {
+        this.loading = false;
+      }
+    },
+
+    async fetchGroupMembers(groupId: number) {
+      try {
+        this.loading = true;
+        const response = await api.get(`/api/groups/${groupId}/members`);
+        
+        if (!response.data) {
+          throw new Error('No data received from server');
+        }
+        
+        return response.data;
+      } catch (error: any) {
+        console.error('Error fetching group members:', error.response?.data || error.message);
+        this.error = error.response?.data?.message || error.message;
         throw error;
       } finally {
         this.loading = false;

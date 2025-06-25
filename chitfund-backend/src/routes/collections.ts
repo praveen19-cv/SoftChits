@@ -711,13 +711,11 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
     console.log(`Using group members table: ${groupMembersTableName}`);
 
     // Execute all updates in a transaction
-    await executeTransaction(db, async () => {
-      // 1. Get group members
+    await executeTransaction(db, async () => {      // 1. Get group members
       const members = await withRetry(() => 
         db.prepare(`
-          SELECT gm.member_id, m.name as member_name 
+          SELECT gm.member_id, gm.member_name 
           FROM ${groupMembersTableName} gm
-          JOIN members m ON m.id = gm.member_id
           WHERE gm.group_id = ?
         `).all(groupId) as { member_id: number, member_name: string }[]
       );

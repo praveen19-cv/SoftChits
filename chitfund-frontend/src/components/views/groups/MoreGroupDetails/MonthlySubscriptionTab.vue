@@ -1,5 +1,33 @@
+<!--
+BUSINESS LOGIC SUMMARY:
+This component manages monthly subscription calculations and export operations for chit fund groups.
+
+KEY FEATURES:
+1. Commission Management: Allows setting commission percentage (4% default) with automatic recalculation
+2. Monthly Subscription Calculation: 
+   - Month 1: Base subscription amount only (no bid/dividend)
+   - Months 2-N: Base subscription minus distributed dividend based on bid amount
+3. Export Operations: Exports monthly payouts to member installments in collection_balance table
+4. Data Persistence: All calculations saved to monthly_subscription table with export status tracking
+5. State Synchronization: Ensures UI and backend data consistency through proper save/load cycles
+
+CALCULATION LOGIC:
+- Base Subscription = Total Amount ÷ Member Count
+- Commission Amount = Total Amount × Commission Percentage
+- Total Dividend = Bid Amount - Commission Amount  
+- Distributed Dividend = Total Dividend ÷ Member Count
+- Monthly Subscription = Base Subscription - Distributed Dividend
+
+EXPORT WORKFLOW:
+1. Save current month data
+2. Export creates installment records for all group members
+3. Mark month as exported in monthly_subscription table
+4. Update UI state and sync with backend
+5. Prevent further modifications to exported months
+-->
+
 <script lang="ts" setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import { useCollectionsStore } from '@/stores/CollectionsStore'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
@@ -11,7 +39,7 @@ const props = defineProps<{
 const store = useGroupsStore()
 const collectionsStore = useCollectionsStore()
 const loading = ref(false)
-const commissionPercentage = ref(4) // Default 4%
+const commissionPercentage = ref(4)
 const notification = ref({
   show: false,
   message: '',
@@ -30,7 +58,7 @@ interface MonthData {
 const months = ref<MonthData[]>([])
 const groupDetails = computed(() => store.currentGroup)
 
-// Helper function to properly parse is_exported value
+// Parse is_exported value from database (can be boolean, number, or string)
 const parseExportedStatus = (value: any): boolean => {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value === 1;
@@ -38,15 +66,12 @@ const parseExportedStatus = (value: any): boolean => {
   return false;
 };
 
-// Calculate commission amount based on total amount and percentage
 const commissionAmount = computed(() => {
   if (!groupDetails.value) return 0
   return (groupDetails.value.total_amount * commissionPercentage.value) / 100
 })
 
-// Add the missing function
 const calculateCommissionAmount = () => {
-  // Recalculate all month values when commission changes
   months.value.forEach((_, index) => {
     if (index > 0) {
       calculateMonthValues(index)
@@ -54,30 +79,23 @@ const calculateCommissionAmount = () => {
   })
 }
 
-// Calculate values for a specific month
 const calculateMonthValues = (index: number) => {
   const month = months.value[index]
   if (!month || !groupDetails.value) return
 
-  // Calculate total dividend
   month.totalDividend = month.bidAmount - commissionAmount.value
-
-  // Calculate distributed dividend
   month.distributedDividend = month.totalDividend / (groupDetails.value.member_count || 1)
 
-  // Calculate monthly subscription
   const baseSubscription = groupDetails.value.total_amount / (groupDetails.value.member_count || 1)
   month.monthlySubscription = baseSubscription - month.distributedDividend
 }
 
-// Update first month subscription
 const updateFirstMonthSubscription = () => {
   if (!groupDetails.value) return
   const baseSubscription = groupDetails.value.total_amount / (groupDetails.value.member_count || 1)
   months.value[0].monthlySubscription = baseSubscription
 }
 
-// Save commission percentage
 const saveCommission = async () => {
   try {
     loading.value = true
@@ -98,19 +116,14 @@ const saveCommission = async () => {
     // Create subscriptions array with updated data, preserving export status
     const subscriptions = months.value.map((month, index) => ({
       month_number: index + 1,
-      bid_amount: month.bidAmount,
-      total_dividend: month.totalDividend,
+      bid_amount: month.bidAmount,      total_dividend: month.totalDividend,
       distributed_dividend: month.distributedDividend,
       monthly_subscription: month.monthlySubscription,
-      is_exported: month.isExported ? 1 : 0 // Preserve export status
+      is_exported: month.isExported ? 1 : 0
     }))
     
-    console.log('Updating monthly subscriptions after commission change:', subscriptions)
     await store.updateMonthlySubscriptions(props.groupId, subscriptions)
-    
-    // Refresh data from backend to ensure UI is synchronized
-    await store.fetchMonthlySubscriptions(props.groupId)
-      // Update the local state with the fresh data from backend
+      await store.fetchMonthlySubscriptions(props.groupId)
     const updatedSubscriptions = store.monthlySubscriptions as any[];
     for (let i = 0; i < months.value.length; i++) {
       const subscription = updatedSubscriptions.find((s: any) => s.month_number === i + 1);
@@ -127,7 +140,6 @@ const saveCommission = async () => {
   }
 }
 
-// Show notification
 const showNotification = (message: string, type: 'success' | 'error' = 'success') => {
   notification.value = {
     show: true,
@@ -136,63 +148,43 @@ const showNotification = (message: string, type: 'success' | 'error' = 'success'
   }
 }
 
-// Fetch existing data from monthly_subscription table and initialize component
 const loadData = async () => {
   try {
-    loading.value = true;
-    console.log('Fetching existing data from monthly_subscription table...');
-    
-    // Fetch all required data from backend
     await store.fetchGroupById(props.groupId);
     await store.fetchChitDates(props.groupId);
-    
-    // Fetch existing monthly subscription data from database
     await store.fetchMonthlySubscriptions(props.groupId);
-    console.log('Fetched monthly subscriptions from database:', store.monthlySubscriptions);
 
-    // Fetch commission percentage from the database
-    commissionPercentage.value = store.currentGroup?.commission_percentage ?? 4;// Check if any group is exported using the helper function
+    commissionPercentage.value = store.currentGroup?.commission_percentage ?? 4;
     const isAnyGroupExported = (store.monthlySubscriptions as { is_exported?: boolean | number | string }[]).some(subscription => parseExportedStatus(subscription.is_exported));
     if (isAnyGroupExported) {
-      console.warn('Commission changes are restricted as one or more groups are exported.');
       commissionPercentage.value = store.currentGroup?.commission_percentage || 4;
     }
 
-    // Initialize months data
     const numberOfMonths = (store.currentGroup?.number_of_months || 0) + 1;
-    const chitDates = store.chitDates.slice(0, -1); // Exclude the last chit date
+    const chitDates = store.chitDates.slice(0, -1);
     const startDate = new Date(store.currentGroup?.start_date || '');
 
     if (!store.currentGroup) {
       throw new Error('Group details not found');
     }
 
-    if (!chitDates.length) {
-      console.warn('No chit dates found for group');
-    }    // Try to fetch subscriptions
-    // Extend the type to include is_exported
     type MonthlySubscription = {
       month_number: number;
       bid_amount: number;
       total_dividend: number;
       distributed_dividend: number;
       monthly_subscription: number;
-      is_exported?: boolean | number | string; // Can be boolean, number (0/1), or string ('true'/'false')
-    };    // Type assertion to work with existing monthly subscription data from database
+      is_exported?: boolean | number | string;
+    };
+
     let subscriptions = store.monthlySubscriptions as MonthlySubscription[];
     
-    // Only create new data if no existing monthly subscription data is found
     if (!subscriptions.length || subscriptions.length !== numberOfMonths) {
-      console.log('No existing monthly subscription data found, creating initial data...');
-      // Create initial subscriptions only if none exist
       const baseSubscription = store.currentGroup.total_amount / store.currentGroup.member_count;
-      const commissionAmount = (store.currentGroup.total_amount * commissionPercentage.value) / 100;
 
-      // Only create new subscriptions if the table is completely empty
-      if (!subscriptions.length) {        // Ensure we create exactly numberOfMonths subscriptions
+      if (!subscriptions.length) {
         subscriptions = Array(numberOfMonths).fill(null).map((_, index) => {
           if (index === 0) {
-            // Month 1: Only monthly subscription, other fields zero
             return {
               month_number: index + 1,
               bid_amount: 0,
@@ -202,50 +194,42 @@ const loadData = async () => {
               is_exported: false as boolean
             };
           } else {
-            // For months 2 to N+1: Initialize with zero bid amount
-            // Let user input the actual bid amounts and save them
             return {
               month_number: index + 1,
-              bid_amount: 0, // Start with 0, user will input actual amounts
+              bid_amount: 0,
               total_dividend: 0,
               distributed_dividend: 0,
-              monthly_subscription: baseSubscription, // Base subscription without dividend
+              monthly_subscription: baseSubscription,
               is_exported: false as boolean
             };
           }
-        });        try {
-          // Save the subscriptions - convert to the expected type
+        });
+
+        try {
           const subscriptionsToSave = subscriptions.map(sub => ({
             month_number: sub.month_number,
             bid_amount: sub.bid_amount,
             total_dividend: sub.total_dividend,
             distributed_dividend: sub.distributed_dividend,
             monthly_subscription: sub.monthly_subscription,
-            is_exported: parseExportedStatus(sub.is_exported) ? 1 : 0 // Convert to number
+            is_exported: parseExportedStatus(sub.is_exported) ? 1 : 0
           }));
           await store.updateMonthlySubscriptions(props.groupId, subscriptionsToSave);
-          // Refresh subscriptions after saving
           await store.fetchMonthlySubscriptions(props.groupId);
-          subscriptions = store.monthlySubscriptions;        } catch (error) {
-          console.error('Failed to save subscriptions:', error);
+          subscriptions = store.monthlySubscriptions;
+        } catch (error) {
           showNotification('Failed to save subscriptions. Please try again.', 'error');
           return;
         }
       }
-    } else {
-      console.log(`Found existing monthly subscription data for ${subscriptions.length} months in database`);
-    }    // Ensure we have exactly numberOfMonths entries
+    }
+
     if (subscriptions.length !== numberOfMonths) {
-      console.warn(`Expected ${numberOfMonths} months but got ${subscriptions.length}`);
-      // If we don't have enough months, create only the missing ones
       if (subscriptions.length < numberOfMonths) {
         const baseSubscription = store.currentGroup.total_amount / store.currentGroup.member_count;
-        const commissionAmount = (store.currentGroup.total_amount * commissionPercentage.value) / 100;
 
-        // Add only the missing months, preserving existing data
         for (let i = subscriptions.length; i < numberOfMonths; i++) {
           if (i === 0) {
-            // Month 1: Only monthly subscription, other fields zero
             subscriptions.push({
               month_number: i + 1,
               bid_amount: 0,
@@ -254,134 +238,89 @@ const loadData = async () => {
               monthly_subscription: baseSubscription
             });
           } else {
-            // For months 2 onwards: Initialize with zero bid amount only for new months
             subscriptions.push({
               month_number: i + 1,
-              bid_amount: 0, // Start with 0, user will input actual amounts
+              bid_amount: 0,
               total_dividend: 0,
               distributed_dividend: 0,
-              monthly_subscription: baseSubscription // Base subscription without dividend
+              monthly_subscription: baseSubscription
             });
           }
-        }        // Save only the new missing months
+        }
+
         try {
-          // Convert to the expected type
           const subscriptionsToSave = subscriptions.map(sub => ({
             month_number: sub.month_number,
             bid_amount: sub.bid_amount,
             total_dividend: sub.total_dividend,
             distributed_dividend: sub.distributed_dividend,
             monthly_subscription: sub.monthly_subscription,
-            is_exported: parseExportedStatus(sub.is_exported) ? 1 : 0 // Convert to number
+            is_exported: parseExportedStatus(sub.is_exported) ? 1 : 0
           }));
           await store.updateMonthlySubscriptions(props.groupId, subscriptionsToSave);
           await store.fetchMonthlySubscriptions(props.groupId);
           subscriptions = store.monthlySubscriptions;
         } catch (error) {
-          console.error('Failed to save missing months:', error);
           showNotification('Failed to save missing months. Please try again.', 'error');
           return;
         }
       }
-    }    // Create months array with all months
+    }
+
     months.value = Array(numberOfMonths - 1).fill(null).map((_, index) => {
       const subscription = subscriptions.find(s => s.month_number === index + 1);
       let date = '';
 
       if (index === 0) {
-        // Month 1: One month before start date
         const month1Date = new Date(startDate);
         month1Date.setMonth(month1Date.getMonth() - 1);
         date = month1Date.toISOString().slice(0, 10);
       } else {
-        // For months 2 to N, use chitDates[index-1] if available
         const chitDateIndex = index - 1;
         const chitDate = chitDates[chitDateIndex];
         date = chitDate?.chit_date || '';
-      }      // Properly handle is_exported status from database using the helper function
+      }
+
       const isExported = parseExportedStatus(subscription?.is_exported);
       
       return {
         date: date,
-        // Use data from monthly_subscriptions table (subscription) - this is the saved data
         bidAmount: subscription?.bid_amount || 0,
         totalDividend: subscription?.total_dividend || 0,
         distributedDividend: subscription?.distributed_dividend || 0,
         monthlySubscription: subscription?.monthly_subscription || 0,
-        isExported: isExported // Use properly parsed export status from database
+        isExported: isExported
       };
     });
-
-    // Log the loaded data with export status
-    console.log('Loaded months data from database with export status:', months.value.map(m => ({
-      bidAmount: m.bidAmount,
-      monthlySubscription: m.monthlySubscription,
-      isExported: m.isExported
-    })));
-
-    // Verify export status from backend API as a secondary check only if needed
-    console.log(`Verifying export status for all ${months.value.length} months from API`);
-    for (let i = 0; i < months.value.length; i++) {
-      try {
-        console.log(`Verifying export status for month ${i + 1} via API`);
-        const apiExportStatus = await collectionsStore.getNextMonthStatus(props.groupId, i + 1);
-        const dbExportStatus = months.value[i].isExported;
-        
-        console.log(`Month ${i + 1}: DB status = ${dbExportStatus}, API status = ${apiExportStatus}`);
-        
-        // If there's a mismatch, prefer the API status and log a warning
-        if (dbExportStatus !== apiExportStatus) {
-          console.warn(`Export status mismatch for month ${i + 1}: DB=${dbExportStatus}, API=${apiExportStatus}. Using API status.`);
-          months.value[i].isExported = apiExportStatus;
-        }
-      } catch (error) {
-        console.warn(`Could not verify export status for month ${i + 1} via API:`, error);        // Keep the database status if API call fails
-      }
-    }
-    
-    console.log('Successfully loaded and initialized data from monthly_subscription table');
   } catch (error: any) {
-    console.error('Error loading data:', error);
     showNotification(error.message || 'Failed to load data', 'error');
-  } finally {
-    loading.value = false;
   }
 };
 
-// Modify checkExportStatus to handle errors gracefully and preserve database status
 const checkExportStatus = async (month: number) => {
   try {
-    console.log(`Checking export status for month ${month}`);
     const apiExportStatus = await collectionsStore.getNextMonthStatus(props.groupId, month);
     
     if (month < 1 || month > months.value.length) {
-      console.warn(`Month index out of range: ${month}. Available months: 1-${months.value.length}`);
       return false;
     }
     
     if (months.value[month - 1]) {
       const currentDbStatus = months.value[month - 1].isExported;
-      console.log(`Month ${month} - DB status: ${currentDbStatus}, API status: ${apiExportStatus}`);
       
-      // Only update if there's a discrepancy and log it
       if (currentDbStatus !== apiExportStatus) {
-        console.warn(`Export status discrepancy for month ${month}: DB=${currentDbStatus}, API=${apiExportStatus}. Updating to API status.`);
         months.value[month - 1].isExported = apiExportStatus;
       }
       
       return apiExportStatus;
     } else {
-      console.warn(`Month ${month} not found in months array`);
       return false;
     }
   } catch (error) {
-    console.warn(`Error checking export status for month ${month}:`, error);
-    // Don't throw error, just log it and preserve existing status
     return months.value[month - 1]?.isExported || false;
   }
 }
 
-// Add API call to update is_exported in monthly_subscription table
 const setMonthExportStatus = async (month: number, isExported: boolean) => {
   try {
     loading.value = true;
@@ -389,36 +328,27 @@ const setMonthExportStatus = async (month: number, isExported: boolean) => {
     months.value[month - 1].isExported = isExported;
     showNotification(isExported ? 'Month marked as exported.' : 'Month export reset.');
   } catch (error: any) {
-    showNotification(error.message || 'Failed to update export status', 'error');
-  } finally {
+    showNotification(error.message || 'Failed to update export status', 'error');  } finally {
     loading.value = false;
   }
-};
+}
 
-// Save individual month data
 const saveMonthData = async (monthIndex: number) => {
   try {
     loading.value = true
     const month = months.value[monthIndex]
-    
-    console.log(`Saving data for month ${monthIndex + 1}`);
 
     // Create all subscriptions array to preserve existing data AND export status
     const allSubscriptions = months.value.map((m, i) => ({
       month_number: i + 1,
       bid_amount: m.bidAmount,
-      total_dividend: m.totalDividend,
-      distributed_dividend: m.distributedDividend,
+      total_dividend: m.totalDividend,      distributed_dividend: m.distributedDividend,
       monthly_subscription: m.monthlySubscription,
-      is_exported: m.isExported ? 1 : 0 // Preserve export status
+      is_exported: m.isExported ? 1 : 0
     }))
-    
-    console.log('All subscriptions being sent:', allSubscriptions);
 
-    // Update all months to preserve data integrity
     await store.updateMonthlySubscriptions(props.groupId, allSubscriptions)
-      // Refresh the data from backend to get the correct export status
-    await store.fetchMonthlySubscriptions(props.groupId);    // Update the local state with the fresh data from backend
+    await store.fetchMonthlySubscriptions(props.groupId);// Update the local state with the fresh data from backend
     const updatedSubscriptions = store.monthlySubscriptions as any[];
     for (let i = 0; i < months.value.length; i++) {
       const subscription = updatedSubscriptions.find((s: any) => s.month_number === i + 1);
@@ -435,7 +365,6 @@ const saveMonthData = async (monthIndex: number) => {
   }
 }
 
-// Save all monthly data
 const saveMonthlyData = async () => {
   try {
     loading.value = true
@@ -447,12 +376,9 @@ const saveMonthlyData = async () => {
       monthly_subscription: month.monthlySubscription,
       is_exported: month.isExported ? 1 : 0 // Preserve export status
     }))
-    
-    console.log('Subscriptions being sent to backend:', subscriptions);
+      await store.updateMonthlySubscriptions(props.groupId, subscriptions)
+    await store.fetchMonthlySubscriptions(props.groupId);
 
-    await store.updateMonthlySubscriptions(props.groupId, subscriptions)
-      // Refresh the data from backend to get the correct export status
-    await store.fetchMonthlySubscriptions(props.groupId);    // Update the local state with the fresh data from backend
     const updatedSubscriptions = store.monthlySubscriptions as any[];
     for (let i = 0; i < months.value.length; i++) {
       const subscription = updatedSubscriptions.find((s: any) => s.month_number === i + 1);
@@ -469,7 +395,6 @@ const saveMonthlyData = async () => {
   }
 }
 
-// Add date formatting function
 const formatDate = (dateString: string) => {
   if (!dateString) return '';
   const date = new Date(dateString);
@@ -480,17 +405,14 @@ const formatDate = (dateString: string) => {
   }).replace(/\//g, '-');
 }
 
-// Modify export function to call backend API for exporting month payout and save all changes
 const exportMonthPayout = async (monthNumber: number) => {
   try {
     loading.value = true;
     
     // STEP 1: Save current month data first to ensure the current month is saved before export
-    console.log(`Step 1: Saving current month ${monthNumber} data before export`);
     await saveMonthData(monthNumber - 1); // monthIndex is 0-based, monthNumber is 1-based
     
     // STEP 2: Save all monthly data to ensure everything is up to date, preserving export status
-    console.log(`Step 2: Saving all monthly data before export`);
     const subscriptions = months.value.map((month, index) => ({
       month_number: index + 1,
       bid_amount: month.bidAmount,
@@ -504,19 +426,16 @@ const exportMonthPayout = async (monthNumber: number) => {
     
     // Get the monthly subscription amount for this month
     const monthlySubscription = months.value[monthNumber - 1].monthlySubscription;
-    console.log(`Exporting month ${monthNumber} with subscription amount: ${monthlySubscription}`);
     
     // STEP 3: Perform the export operation (this should handle both operations):
     // 1. Create installment records in collection_balance table
     // 2. Set is_exported = 1 in monthly_subscription table
-    console.log(`Step 3: Performing export operation for month ${monthNumber}`);
     await collectionsStore.exportMonthPayout(props.groupId, monthNumber, monthlySubscription);
     
     // Update the UI state immediately after successful export
     months.value[monthNumber - 1].isExported = true;
     
     // STEP 4: Save all data again after export to ensure synchronization
-    console.log(`Step 4: Saving all monthly data after export to ensure synchronization`);
     const postExportSubscriptions = months.value.map((month, index) => ({
       month_number: index + 1,
       bid_amount: month.bidAmount,
@@ -529,29 +448,23 @@ const exportMonthPayout = async (monthNumber: number) => {
     await store.updateMonthlySubscriptions(props.groupId, postExportSubscriptions);
     
     // STEP 5: Verify the export status from backend to ensure consistency
-    console.log(`Step 5: Verifying export status from backend`);
     const isExported = await collectionsStore.getNextMonthStatus(props.groupId, monthNumber);
     if (isExported !== true) {
-      console.warn(`Backend export status (${isExported}) does not match expected (true) after export`);
-      // Update UI to match backend state
       months.value[monthNumber - 1].isExported = isExported;
     }
     
-    // STEP 6: Final save to ensure UI and backend are synchronized
-    console.log(`Step 6: Final save to ensure complete synchronization`);
+    // STEP 6: Final save to ensure complete synchronization
     await saveMonthData(monthNumber - 1);
     
     showNotification(`Month ${monthNumber} payout exported and saved successfully`);
   } catch (error: any) {
-    console.error('Export failed:', error);
     // If there's an error, refresh to get the correct state from backend
     try {
       const actualStatus = await collectionsStore.getNextMonthStatus(props.groupId, monthNumber);
       months.value[monthNumber - 1].isExported = actualStatus;
-      // Also save the corrected state
       await saveMonthData(monthNumber - 1);
     } catch (e) {
-      console.error('Failed to refresh export status after error:', e);
+      // Silently handle error
     }
     showNotification(error.message || 'Failed to export month payout', 'error');
   } finally {
@@ -559,80 +472,65 @@ const exportMonthPayout = async (monthNumber: number) => {
   }
 }
 
-// Modify reset function to update status in both backend and UI and save all changes
 const resetMonthPayout = async (monthNumber: number) => {
   try {
     loading.value = true;
     
-    console.log(`Resetting month ${monthNumber} payout`);
-    
-    // STEP 1: Save current state before reset to ensure all data is preserved
-    console.log(`Step 1: Saving current state before reset`);
     await saveMonthData(monthNumber - 1);
     
-    // STEP 2: Perform the reset operation (this should handle both operations):
-    // 1. Remove installment records from collection_balance table for this month
-    // 2. Set is_exported = 0 in monthly_subscription table
-    console.log(`Step 2: Performing reset operation for month ${monthNumber}`);
     await collectionsStore.resetNextMonthPayout(props.groupId, monthNumber);
     
-    // Update the UI state immediately after successful reset
     months.value[monthNumber - 1].isExported = false;
     
-    // STEP 3: Verify the export status from backend to ensure consistency
-    console.log(`Step 3: Verifying reset status from backend`);
     const isExported = await collectionsStore.getNextMonthStatus(props.groupId, monthNumber);
     if (isExported !== false) {
-      console.warn(`Backend export status (${isExported}) does not match expected (false) after reset`);
-      // Update UI to match backend state
       months.value[monthNumber - 1].isExported = isExported;
     }
     
-    // STEP 4: Save all monthly data to ensure everything is synchronized, preserving export status
-    console.log(`Step 4: Saving all monthly data after reset to ensure synchronization`);
     const subscriptions = months.value.map((month, index) => ({
       month_number: index + 1,
       bid_amount: month.bidAmount,
       total_dividend: month.totalDividend,
       distributed_dividend: month.distributedDividend,
       monthly_subscription: month.monthlySubscription,
-      is_exported: month.isExported ? 1 : 0 // Preserve current export status
+      is_exported: month.isExported ? 1 : 0
     }));
     
     await store.updateMonthlySubscriptions(props.groupId, subscriptions);
     
-    // STEP 5: Final save for the specific month to ensure complete synchronization
-    console.log(`Step 5: Final save for month ${monthNumber} to ensure complete synchronization`);
     await saveMonthData(monthNumber - 1);
     
     showNotification(`Month ${monthNumber} payout reset and saved successfully`);
   } catch (error: any) {
-    console.error('Reset failed:', error);
-    // If there's an error, refresh to get the correct state from backend
     try {
       const actualStatus = await collectionsStore.getNextMonthStatus(props.groupId, monthNumber);
       months.value[monthNumber - 1].isExported = actualStatus;
-      // Also save the corrected state
       await saveMonthData(monthNumber - 1);
     } catch (e) {
-      console.error('Failed to refresh export status after error:', e);
+      // Silently handle error
     }
     showNotification(error.message || 'Failed to reset month payout', 'error');
   } finally {
-    loading.value = false;
+    loading.value = false;  
   }
 }
 
+watch(months, () => {
+  // Watch for changes in months data to ensure UI reactivity
+}, { deep: true });
+
 onMounted(async () => {
-  console.log('Component mounted, fetching existing data from monthly_subscription table...');
-  
   try {
-    // Fetch existing data from monthly_subscription table and other related data
-    await loadData();
-    console.log('Successfully loaded existing data from monthly_subscription table');
+    loading.value = true;
+    
+    // Fetch existing data from monthly_subscription table and other related data    await loadData();
+    
+    await nextTick();
+    
   } catch (error) {
-    console.error('Failed to load existing data on mount:', error);
     showNotification('Failed to load existing data. Please refresh the page.', 'error');
+  } finally {
+    loading.value = false;
   }
 })
 </script>
@@ -660,8 +558,7 @@ onMounted(async () => {
         <span>₹{{ commissionAmount.toLocaleString() }}</span>
       </div>
       <button 
-        class="save-button" 
-        @click="saveCommission"
+        class="save-button"        @click="saveCommission"
         :disabled="loading"
       >
         {{ loading ? 'Saving...' : 'Save Commission' }}
@@ -677,8 +574,7 @@ onMounted(async () => {
             <div class="marker-line" v-if="index < months.length - 1"></div>
           </div>
           
-          <div class="timeline-content">
-            <div class="month-header">
+          <div class="timeline-content">            <div class="month-header">
               <h3>Month {{ index + 1 }}</h3>
               <span class="date">{{ formatDate(month.date) }}</span>
             </div>
@@ -734,8 +630,7 @@ onMounted(async () => {
                 :disabled="loading"
               >
                 {{ loading ? 'Saving...' : 'Save' }}
-              </button>
-              <button 
+              </button>              <button 
                 class="export-button" 
                 :class="{ 'exported': month.isExported }"
                 @click="exportMonthPayout(index + 1)"

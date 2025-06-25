@@ -52,15 +52,14 @@ export class GroupTableService {
           is_exported BOOLEAN DEFAULT 0
         )
       `).run();
-      tables.push(collectionBalancesTableName);
-
-      // Create group members table
+      tables.push(collectionBalancesTableName);      // Create group members table
       const groupMembersTableName = this.getTableName(groupId, groupName, 'group_members');
       db.prepare(`
         CREATE TABLE IF NOT EXISTS ${groupMembersTableName} (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           group_id INTEGER NOT NULL,
           member_id INTEGER NOT NULL,
+          member_name TEXT NOT NULL,
           group_member_id TEXT NOT NULL,
           created_at TEXT DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (group_id) REFERENCES groups(id),
@@ -131,6 +130,41 @@ export class GroupTableService {
       chitDatesTable: this.getTableName(groupId, groupName, 'chit_dates'),
       subscriptionsTable: this.getTableName(groupId, groupName, 'monthly_subscription')
     };
+  }
+
+  static async ensureMemberNameColumn(groupId: number, groupName: string): Promise<void> {
+    const db = getWriteDb();
+    try {
+      const groupMembersTableName = this.getTableName(groupId, groupName, 'group_members');
+      
+      // Check if member_name column exists
+      const columnInfo = db.prepare(`PRAGMA table_info(${groupMembersTableName})`).all() as any[];
+      const hasMemberNameColumn = columnInfo.some(col => col.name === 'member_name');
+      
+      if (!hasMemberNameColumn) {
+        // Add member_name column
+        db.prepare(`ALTER TABLE ${groupMembersTableName} ADD COLUMN member_name TEXT`).run();
+        
+        // Update existing records with member names
+        const existingRecords = db.prepare(`
+          SELECT member_id FROM ${groupMembersTableName}
+        `).all() as { member_id: number }[];
+        
+        for (const record of existingRecords) {
+          const member = db.prepare('SELECT name FROM members WHERE id = ?').get(record.member_id) as { name: string } | undefined;
+          if (member) {
+            db.prepare(`
+              UPDATE ${groupMembersTableName} 
+              SET member_name = ? 
+              WHERE member_id = ?
+            `).run(member.name, record.member_id);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error ensuring member_name column:', error);
+      // Don't throw error for migration issues
+    }
   }
 
 }

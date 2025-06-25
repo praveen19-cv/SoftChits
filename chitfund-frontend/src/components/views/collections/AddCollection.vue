@@ -90,13 +90,12 @@ async function loadGroupsAndMembers() {
     groups.value = groupsStore.groups as Group[]
     members.value = membersStore.members as Member[]
   } catch (error) {
-    console.error('Error loading data:', error)
     showErrorNotification('Failed to load groups and members')
   }
 }
 
 function validateDate(group: Group) {
-  if (!collection.value.date || !group) return false
+  if (!collection.value.date || !group) return true // Allow if no date set yet
 
   const selectedDate = new Date(collection.value.date)
   const groupStartDate = new Date(group.start_date)
@@ -107,7 +106,9 @@ function validateDate(group: Group) {
 }
 
 async function loadExistingCollections() {
-  if (!collection.value.date || !collection.value.group_id) return;
+  if (!collection.value.date || !collection.value.group_id) {
+    return;
+  }
 
   try {
     const existingCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
@@ -115,6 +116,7 @@ async function loadExistingCollections() {
       Number(collection.value.group_id)
     ) as ExistingCollection[];
 
+    // Update collection sheet with existing data
     collectionSheet.value = collectionSheet.value.map(row => {
       const memberCollections = existingCollections.filter(c => c.member_id === row.memberId);
       if (memberCollections.length > 0) {
@@ -125,6 +127,7 @@ async function loadExistingCollections() {
         const totalAmount = memberCollections.reduce((sum: number, c: ExistingCollection) => sum + c.collection_amount, 0);
         const installmentBalances: { [key: number]: number } = {};
         const monthlySubscription = calculateMonthlySubscription();
+        
         memberCollections.forEach((c: ExistingCollection) => {
           if (c.is_completed) {
             installmentBalances[c.installment_number] = 0;
@@ -132,6 +135,7 @@ async function loadExistingCollections() {
             installmentBalances[c.installment_number] = monthlySubscription - c.collection_amount;
           }
         });
+        
         return {
           ...row,
           id: firstCollection.id,
@@ -143,7 +147,6 @@ async function loadExistingCollections() {
       return row;
     });
   } catch (error) {
-    console.error('Error loading existing collections:', error);
     showErrorNotification('Failed to load existing collections');
   }
 }
@@ -156,44 +159,78 @@ async function getPreviousCollections(memberId: number): Promise<ExistingCollect
       new Date(c.collection_date) < new Date(collection.value.date)
     );
   } catch (error) {
-    console.error('Error fetching previous collections:', error);
     return [];
   }
 }
 
 async function handleGroupChange() {
+  // This is just for immediate feedback, the actual loading happens with the button
+  const group = groups.value.find(g => g.id === Number(collection.value.group_id))
+  if (group) {
+    selectedGroup.value = group
+    errorMessage.value = '';
+  } else {
+    selectedGroup.value = null
+    errorMessage.value = '';
+  }
+}
+
+async function loadGroupMembers() {
   const group = groups.value.find(g => g.id === Number(collection.value.group_id))
 
   if (!group) {
-    return
+    showErrorNotification('Please select a group first');
+    return;
   }
 
   selectedGroup.value = group
+  errorMessage.value = '';
 
-  if (!validateDate(group)) {
-    showErrorNotification('Selected date must be from one month before group start date')
-    return
+  // Clear existing data first
+  collectionSheet.value = [];
+  collectionBalances.value = [];
+
+  // Check date validation if date is selected
+  if (collection.value.date && !validateDate(group)) {
+    errorMessage.value = 'Selected date must be from one month before group start date';
   }
-  errorMessage.value = ''
-
-  collectionSheet.value = members.value.map((member, index) => ({
-    serialNo: index + 1,
-    memberId: Number(member.id),
-    memberName: member.name,
-    installment: '',
-    amount: '',
-    installmentBalances: {}
-  }))
 
   try {
-    collectionBalances.value = await collectionsStore.fetchCollectionBalances(Number(collection.value.group_id))
-  } catch (error) {
-    console.error('Error loading collection balances:', error)
-    showErrorNotification('Failed to load collection balances')
-  }
+    // Fetch group members from the specific API endpoint
+    const response = await groupsStore.fetchGroupMembers(group.id);
+    const groupMembersFiltered = response as Member[];
+    groupMembers.value = groupMembersFiltered;
+    
+    if (groupMembersFiltered.length === 0) {
+      showErrorNotification(`No members found for group "${group.name}". Please add members to this group first.`);
+      return;
+    }
+    
+    // Create fresh collection sheet - ALWAYS show this when group is selected
+    collectionSheet.value = groupMembersFiltered.map((member, index) => ({
+      serialNo: index + 1,
+      memberId: Number(member.id),
+      memberName: member.name,
+      installment: '',
+      amount: '',
+      installmentBalances: {}
+    }))
 
-  if (collection.value.date) {
-    await loadExistingCollections();
+    try {
+      // Load collection balances for this group
+      collectionBalances.value = await collectionsStore.fetchCollectionBalances(Number(collection.value.group_id))
+    } catch (error) {
+      showErrorNotification('Failed to load collection balances')
+    }
+
+    // Load existing collections if date is also selected and valid
+    if (collection.value.date && validateDate(group)) {
+      await loadExistingCollections();
+    }
+
+    showSuccessNotification(`Loaded ${groupMembersFiltered.length} members for ${group.name}`);
+  } catch (error) {
+    showErrorNotification(`Failed to load members for group "${group.name}". Please try again.`);
   }
 }
 
@@ -387,7 +424,6 @@ async function handleSubmit() {
         }
       } catch (error: any) {
         hasError = true;
-        console.error('Error creating/updating collection for member:', row.memberId, error);
         showErrorNotification(`Failed to save collection for member ID ${row.memberId}: ${error.response?.data?.message || error.message}`);
       }
     }
@@ -405,7 +441,6 @@ async function handleSubmit() {
       router.push('/collections/add');
     }, 1500);
   } catch (error: any) {
-    console.error('Error creating/updating collections:', error);
     showErrorNotification(error.response?.data?.message || error.message || 'Failed to create/update collections');
   }
 }
@@ -413,6 +448,13 @@ async function handleSubmit() {
 function validateForm() {
   if (!collection.value.date || !collection.value.group_id || collectionSheet.value.length === 0) {
     showErrorNotification('Please fill in all required fields');
+    return false;
+  }
+
+  // Check date validation
+  const group = groups.value.find(g => g.id === Number(collection.value.group_id));
+  if (group && !validateDate(group)) {
+    showErrorNotification('Selected date must be from one month before group start date');
     return false;
   }
 
@@ -428,19 +470,22 @@ function validateForm() {
 }
 
 watch([
-  () => collection.value.date,
-  () => collection.value.group_id
-], async ([newDate, newGroupId]) => {
-  if (newDate && newGroupId) {
-    collectionSheet.value = members.value.map((member, index) => ({
-      serialNo: index + 1,
-      memberId: Number(member.id),
-      memberName: member.name,
-      installment: '',
-      amount: '',
-      installmentBalances: {}
-    }));
-    await loadExistingCollections();
+  () => collection.value.date
+], async ([newDate], [oldDate]) => {
+  // Only handle date changes, not group changes (those are handled by the button)
+  if (newDate && selectedGroup.value) {
+    // Check date validation
+    if (!validateDate(selectedGroup.value)) {
+      errorMessage.value = 'Selected date must be from one month before group start date';
+    } else {
+      errorMessage.value = '';
+      // Load existing collections if date is valid and we have a collection sheet
+      if (collectionSheet.value.length > 0) {
+        await loadExistingCollections();
+      }
+    }
+  } else if (!newDate) {
+    errorMessage.value = '';
   }
 });
 
@@ -479,13 +524,31 @@ onMounted(loadGroupsAndMembers)
         </div>
         <div class="form-group">
           <label for="group_id">Group</label>
-          <select id="group_id" v-model="collection.group_id" required @change="handleGroupChange">
-            <option value="">Select a group</option>
-            <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
-          </select>
+          <div class="group-selection-row">
+            <select id="group_id" v-model="collection.group_id" required @change="handleGroupChange" class="group-select">
+              <option value="">Select a group</option>
+              <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
+            </select>
+            <button 
+              type="button" 
+              @click="loadGroupMembers" 
+              :disabled="!collection.group_id"
+              class="load-members-button"
+            >
+              Load Members
+            </button>
+          </div>
         </div>
       </div>
       <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
+      
+      <!-- Debug/Status Info -->
+      <div v-if="collection.group_id" class="status-info">
+        <p><strong>Selected Group:</strong> {{ selectedGroup?.name || 'Loading...' }}</p>
+        <p><strong>Members in Collection Sheet:</strong> {{ collectionSheet.length }}</p>
+        <p><strong>Total Members for Group:</strong> {{ groupMembers.length }}</p>
+      </div>
+      
       <CollectionSheetTable
         v-if="collectionSheet && collectionSheet.length > 0"
         :collectionSheet="collectionSheet"
@@ -550,6 +613,39 @@ h2 {
   flex: 1;
 }
 
+.group-selection-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.group-select {
+  flex: 1;
+}
+
+.load-members-button {
+  padding: 0.75rem 1.2rem;
+  background-color: #3498db;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background-color 0.2s;
+  white-space: nowrap;
+  min-width: 120px;
+}
+
+.load-members-button:hover:not(:disabled) {
+  background-color: #2980b9;
+}
+
+.load-members-button:disabled {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
 label {
   display: block;
   margin-bottom: 0.5rem;
@@ -609,6 +705,28 @@ input:focus, select:focus {
   padding: 0.5rem;
   background: #fde8e8;
   border-radius: 4px;
+}
+
+.status-info {
+  background: #e8f4f8;
+  border: 1px solid #3498db;
+  border-radius: 4px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.status-info p {
+  margin: 0.5rem 0;
+  color: #2c3e50;
+  font-size: 0.9rem;
+}
+
+.status-info p:first-child {
+  margin-top: 0;
+}
+
+.status-info p:last-child {
+  margin-bottom: 0;
 }
 
 .collection-sheet {
@@ -736,6 +854,17 @@ td input.completed {
   .form-row {
     flex-direction: column;
     gap: 1rem;
+  }
+  
+  .group-selection-row {
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: stretch;
+  }
+  
+  .load-members-button {
+    min-width: auto;
+    width: 100%;
   }
   
   .add-collection {

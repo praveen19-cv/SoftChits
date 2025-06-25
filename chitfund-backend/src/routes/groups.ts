@@ -174,16 +174,17 @@ router.get('/:id/members', async (req, res) => {
     );
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
-    }
-
-    // Get the dynamic table name for group members
+    }    // Get the dynamic table name for group members
     const groupMembersTableName = GroupTableService.getTableName(id, group.name, 'group_members');
+
+    // Ensure the member_name column exists for backwards compatibility
+    await GroupTableService.ensureMemberNameColumn(id, group.name);
 
     const members = await withRetry(() => 
       db.prepare(`
-        SELECT m.* 
-        FROM members m
-        JOIN ${groupMembersTableName} gm ON m.id = gm.member_id
+        SELECT gm.member_id as id, gm.member_name as name, m.phone, m.email, m.address, m.status, gm.group_id
+        FROM ${groupMembersTableName} gm
+        LEFT JOIN members m ON m.id = gm.member_id
         WHERE gm.group_id = ?
       `).all(id)
     );
@@ -204,19 +205,29 @@ router.post('/:id/members', async (req, res) => {
     
     const group = await withRetry(() => 
       db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined
-    );
-    if (!group) {
+    );    if (!group) {
       return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Get the member details first
+    const member = await withRetry(() => 
+      db.prepare('SELECT * FROM members WHERE id = ?').get(member_id)
+    ) as { id: number; name: string } | undefined;
+    if (!member) {
+      return res.status(404).json({ error: 'Member not found' });
     }
 
     // Get the dynamic table name for group members
     const groupMembersTableName = GroupTableService.getTableName(id, group.name, 'group_members');
+
+    // Ensure the member_name column exists for backwards compatibility
+    await GroupTableService.ensureMemberNameColumn(id, group.name);
     
     const result = await withRetry(() => 
       db.prepare(`
-        INSERT INTO ${groupMembersTableName} (group_id, member_id, group_member_id, created_at)
-        VALUES (?, ?, ?, ?)
-      `).run(id, member_id, `GM${id}_${member_id}`, new Date().toISOString())
+        INSERT INTO ${groupMembersTableName} (group_id, member_id, member_name, group_member_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(id, member_id, member.name, `GM${id}_${member_id}`, new Date().toISOString())
     );
 
     const newGroupMember = await withRetry(() => 
@@ -282,10 +293,25 @@ router.put('/:id/members', async (req, res) => {
     );
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
-    }
-
-    // Get the dynamic table name for group members
+    }    // Get the dynamic table name for group members
     const groupMembersTableName = GroupTableService.getTableName(id, group.name, 'group_members');
+
+    // Ensure the member_name column exists for backwards compatibility
+    await GroupTableService.ensureMemberNameColumn(id, group.name);
+
+    // Get member details before the transaction
+    const memberDetailsMap = new Map();
+    for (const member of members) {
+      const memberDetails = await withRetry(() => 
+        db.prepare('SELECT name FROM members WHERE id = ?').get(member.id)
+      ) as { name: string } | undefined;
+      
+      if (!memberDetails) {
+        return res.status(404).json({ error: `Member with id ${member.id} not found` });
+      }
+      
+      memberDetailsMap.set(member.id, memberDetails.name);
+    }
 
     // Delete existing members and add new ones in a transaction
     await executeTransaction(db, () => {
@@ -294,10 +320,11 @@ router.put('/:id/members', async (req, res) => {
 
       // Add new members
       for (const member of members) {
+        const memberName = memberDetailsMap.get(member.id);
         db.prepare(`
-          INSERT INTO ${groupMembersTableName} (group_id, member_id, group_member_id, created_at)
-          VALUES (?, ?, ?, ?)
-        `).run(id, member.id, member.groupMemberId, new Date().toISOString());
+          INSERT INTO ${groupMembersTableName} (group_id, member_id, member_name, group_member_id, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(id, member.id, memberName, member.groupMemberId, new Date().toISOString());
       }
 
       // Update group member count

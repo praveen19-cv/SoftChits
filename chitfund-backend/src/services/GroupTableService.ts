@@ -1,4 +1,5 @@
 import { getWriteDb } from '../database/setup';
+import { DailyCollectionSummaryService } from '../database/dailyCollectionSummary';
 
 export class GroupTableService {
   static getTableName(groupId: number, groupName: string, tableType: string): string {
@@ -100,6 +101,11 @@ export class GroupTableService {
       `).run();
       tables.push(monthlySubscriptionsTableName);
 
+      // Create daily collection summary table using the dedicated service
+      await DailyCollectionSummaryService.createTable(groupId, groupName);
+      const dailySummaryTableName = DailyCollectionSummaryService.getTableName(groupId, groupName);
+      tables.push(dailySummaryTableName);
+
       return tables;
     } catch (error) {
       console.error('Error creating group tables:', error);
@@ -116,6 +122,9 @@ export class GroupTableService {
         const tableName = this.getTableName(groupId, groupName, tableType);
         db.prepare(`DROP TABLE IF EXISTS ${tableName}`).run();
       }
+      
+      // Delete daily collection summary table using the dedicated service
+      await DailyCollectionSummaryService.dropTable(groupId, groupName);
     } catch (error) {
       console.error('Error deleting group tables:', error);
       throw error;
@@ -128,7 +137,8 @@ export class GroupTableService {
       balanceTable: this.getTableName(groupId, groupName, 'collection_balance'),
       membersTable: this.getTableName(groupId, groupName, 'group_members'),
       chitDatesTable: this.getTableName(groupId, groupName, 'chit_dates'),
-      subscriptionsTable: this.getTableName(groupId, groupName, 'monthly_subscription')
+      subscriptionsTable: this.getTableName(groupId, groupName, 'monthly_subscription'),
+      dailySummaryTable: this.getTableName(groupId, groupName, 'daily_collection_summary')
     };
   }
 
@@ -166,5 +176,4 @@ export class GroupTableService {
       // Don't throw error for migration issues
     }
   }
-
 }

@@ -1,6 +1,7 @@
 import express from 'express';
 import { getReadDb, getWriteDb, executeTransaction, Group } from '../database/setup';
 import { GroupTableService } from '../services/GroupTableService';
+import { DailyCollectionSummaryService } from '../database/dailyCollectionSummary';
 import { Database as BetterSqliteDatabase } from 'better-sqlite3';
 import { dbPool } from '../database/connection';
 import { withRetry } from '../utils/dbUtils';
@@ -370,6 +371,15 @@ router.post('/', async (req, res) => {
       ).join(', '),
       affectedInstallments
     };
+    
+    // Update daily collection summary
+    try {
+      await DailyCollectionSummaryService.updateSummary(groupId, group.name, collection_date);
+    } catch (summaryError) {
+      console.error('Error updating daily collection summary:', summaryError);
+      // Don't fail the entire operation if summary update fails
+    }
+    
     res.status(201).json(formattedResponse);
   } catch (error: any) {
     console.error('Error creating collection:', error);
@@ -472,7 +482,7 @@ router.delete('/:id', async (req, res) => {
 
     // Get the collection to be deleted with retry
     const collection = await withRetry(() => 
-      db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id) as { collection_amount: number; member_id: number; installment_number: number } | undefined
+      db.prepare(`SELECT * FROM ${tableName} WHERE id = ?`).get(id) as { collection_amount: number; member_id: number; installment_number: number; collection_date: string } | undefined
     );
 
     if (!collection) {
@@ -499,6 +509,14 @@ router.delete('/:id', async (req, res) => {
         collection.installment_number
       );
     });
+
+    // Update daily collection summary
+    try {
+      await DailyCollectionSummaryService.updateSummary(group_id, group.name, collection.collection_date);
+    } catch (summaryError) {
+      console.error('Error updating daily collection summary after deletion:', summaryError);
+      // Don't fail the entire operation if summary update fails
+    }
 
     res.json({ message: 'Collection deleted successfully' });
   } catch (error: any) {

@@ -57,6 +57,11 @@ const collection = ref({
   status: 'pending'
 })
 
+// Date input state for enhanced date picker
+const dateInput = ref('')
+const showCalendar = ref(false)
+const calendarDate = ref(new Date())
+
 const collectionSheet = ref<CollectionSheetRow[]>([])
 const collectionBalances = ref<CollectionBalance[]>([])
 const selectedGroup = ref<Group | null>(null)
@@ -81,6 +86,112 @@ function showErrorNotification(message: string) {
   showNotification.value = true
 }
 
+// Date utility functions for enhanced date picker
+function formatDateForDisplay(dateStr: string): string {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  const day = date.getDate().toString().padStart(2, '0')
+  const month = (date.getMonth() + 1).toString().padStart(2, '0')
+  const year = date.getFullYear()
+  return `${day}/${month}/${year}`
+}
+
+function parseDateInput(input: string): string {
+  if (!input) return ''
+  
+  // Handle dd/mm/yyyy format
+  const ddmmyyyy = input.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (ddmmyyyy) {
+    const day = ddmmyyyy[1].padStart(2, '0')
+    const month = ddmmyyyy[2].padStart(2, '0')
+    const year = ddmmyyyy[3]
+    return `${year}-${month}-${day}`
+  }
+  
+  // Handle yyyy-mm-dd format (from date picker)
+  const yyyymmdd = input.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (yyyymmdd) {
+    return input
+  }
+  
+  return ''
+}
+
+function navigateDate(direction: 'prev' | 'next') {
+  const currentDate = collection.value.date ? new Date(collection.value.date) : new Date()
+  
+  if (direction === 'prev') {
+    currentDate.setDate(currentDate.getDate() - 1)
+  } else {
+    currentDate.setDate(currentDate.getDate() + 1)
+  }
+  
+  const year = currentDate.getFullYear()
+  const month = (currentDate.getMonth() + 1).toString().padStart(2, '0')
+  const day = currentDate.getDate().toString().padStart(2, '0')
+  
+  collection.value.date = `${year}-${month}-${day}`
+  dateInput.value = formatDateForDisplay(collection.value.date)
+  calendarDate.value = currentDate
+}
+
+function toggleCalendar() {
+  showCalendar.value = !showCalendar.value
+  if (showCalendar.value && collection.value.date) {
+    calendarDate.value = new Date(collection.value.date)
+  }
+}
+
+function selectCalendarDate(date: Date) {
+  const year = date.getFullYear()
+  const month = (date.getMonth() + 1).toString().padStart(2, '0')
+  const day = date.getDate().toString().padStart(2, '0')
+  
+  collection.value.date = `${year}-${month}-${day}`
+  dateInput.value = formatDateForDisplay(collection.value.date)
+  calendarDate.value = date
+  showCalendar.value = false
+}
+
+function navigateCalendar(direction: 'prev' | 'next') {
+  const newDate = new Date(calendarDate.value)
+  if (direction === 'prev') {
+    newDate.setMonth(newDate.getMonth() - 1)
+  } else {
+    newDate.setMonth(newDate.getMonth() + 1)
+  }
+  calendarDate.value = newDate
+}
+
+function getCalendarDays() {
+  const year = calendarDate.value.getFullYear()
+  const month = calendarDate.value.getMonth()
+  
+  const firstDay = new Date(year, month, 1)
+  const lastDay = new Date(year, month + 1, 0)
+  const startDate = new Date(firstDay)
+  startDate.setDate(startDate.getDate() - firstDay.getDay())
+  
+  const days = []
+  const currentDate = new Date(startDate)
+  
+  for (let i = 0; i < 42; i++) {
+    days.push({
+      date: new Date(currentDate),
+      isCurrentMonth: currentDate.getMonth() === month,
+      isToday: currentDate.toDateString() === new Date().toDateString(),
+      isSelected: collection.value.date && currentDate.toDateString() === new Date(collection.value.date).toDateString()
+    })
+    currentDate.setDate(currentDate.getDate() + 1)
+  }
+  
+  return days
+}
+
+function getCalendarMonthYear() {
+  return calendarDate.value.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+}
+
 async function loadGroupsAndMembers() {
   try {
     await Promise.all([
@@ -92,17 +203,6 @@ async function loadGroupsAndMembers() {
   } catch (error) {
     showErrorNotification('Failed to load groups and members')
   }
-}
-
-function validateDate(group: Group) {
-  if (!collection.value.date || !group) return true // Allow if no date set yet
-
-  const selectedDate = new Date(collection.value.date)
-  const groupStartDate = new Date(group.start_date)
-  const oneMonthBefore = new Date(groupStartDate)
-  oneMonthBefore.setMonth(oneMonthBefore.getMonth() - 1)
-
-  return selectedDate >= oneMonthBefore
 }
 
 async function loadExistingCollections() {
@@ -193,11 +293,6 @@ async function loadGroupMembers() {
   collectionSheet.value = [];
   collectionBalances.value = [];
 
-  // Check date validation if date is selected
-  if (collection.value.date && !validateDate(group)) {
-    errorMessage.value = 'Selected date must be from one month before group start date';
-  }
-
   try {
     // Fetch group members from the specific API endpoint
     const response = await groupsStore.fetchGroupMembers(group.id);
@@ -226,8 +321,8 @@ async function loadGroupMembers() {
       showErrorNotification('Failed to load collection balances')
     }
 
-    // Load existing collections if date is also selected and valid
-    if (collection.value.date && validateDate(group)) {
+    // Load existing collections if date is also selected
+    if (collection.value.date) {
       await loadExistingCollections();
     }
 
@@ -513,6 +608,7 @@ async function handleSubmit() {
     setTimeout(() => {
       collection.value.date = '';
       collection.value.group_id = '';
+      dateInput.value = '';
       collectionSheet.value = [];
       router.push('/collections/add');
     }, 1500);
@@ -527,13 +623,6 @@ function validateForm() {
     return false;
   }
 
-  // Check date validation
-  const group = groups.value.find(g => g.id === Number(collection.value.group_id));
-  if (group && !validateDate(group)) {
-    showErrorNotification('Selected date must be from one month before group start date');
-    return false;
-  }
-
   const invalidRows = collectionSheet.value
     .filter(row => row.amount && isNaN(parseFloat(row.amount)));
 
@@ -543,6 +632,25 @@ function validateForm() {
   }
 
   return true;
+}
+
+// Computed property for total collected amount
+const totalCollectedAmount = computed(() => {
+  return collectionSheet.value.reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0)
+})
+
+function getMemberBalances(memberId: number): CollectionBalance[] {
+  return collectionBalances.value.filter(b => b.member_id === memberId)
+}
+
+function getInstallmentStatus(memberId: number, installmentNumber: number): { isCompleted: boolean; remainingBalance: number } {
+  const balance = collectionBalances.value.find(
+    b => b.member_id === memberId && b.installment_number === installmentNumber
+  )
+  return {
+    isCompleted: balance?.is_completed || false,
+    remainingBalance: balance?.remaining_balance || calculateMonthlySubscription()
+  }
 }
 
 watch([
@@ -564,33 +672,38 @@ watch([
     collectionBalances.value = [];
     errorMessage.value = '';
     
-    // Only validate date if both date and group are selected
-    if (newDate && selectedGroup.value && !validateDate(selectedGroup.value)) {
-      errorMessage.value = 'Selected date must be from one month before group start date';
+    // Update date display when date changes programmatically
+    if (newDate) {
+      dateInput.value = formatDateForDisplay(newDate);
+    } else {
+      dateInput.value = '';
     }
   }
 });
 
-// Computed property for total collected amount
-const totalCollectedAmount = computed(() => {
-  return collectionSheet.value.reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0)
+// Watch for date input changes to sync with collection.date
+watch(() => dateInput.value, (newValue) => {
+  const parsedDate = parseDateInput(newValue)
+  if (parsedDate) {
+    collection.value.date = parsedDate
+  }
 })
 
-function getMemberBalances(memberId: number): CollectionBalance[] {
-  return collectionBalances.value.filter(b => b.member_id === memberId)
-}
-
-function getInstallmentStatus(memberId: number, installmentNumber: number): { isCompleted: boolean; remainingBalance: number } {
-  const balance = collectionBalances.value.find(
-    b => b.member_id === memberId && b.installment_number === installmentNumber
-  )
-  return {
-    isCompleted: balance?.is_completed || false,
-    remainingBalance: balance?.remaining_balance || calculateMonthlySubscription()
+// Initialize date input display when component mounts
+onMounted(() => {
+  loadGroupsAndMembers()
+  if (collection.value.date) {
+    dateInput.value = formatDateForDisplay(collection.value.date)
   }
-}
-
-onMounted(loadGroupsAndMembers)
+  
+  // Close calendar when clicking outside
+  document.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    if (!target.closest('.form-group') && showCalendar.value) {
+      showCalendar.value = false
+    }
+  })
+})
 </script>
 
 <template>
@@ -602,7 +715,79 @@ onMounted(loadGroupsAndMembers)
       <div class="form-row">
         <div class="form-group">
           <label for="date">Date</label>
-          <input type="date" id="date" v-model="collection.date" required />
+          <div class="date-input-container">
+            <button type="button" @click="navigateDate('prev')" class="date-nav-button" title="Previous day">
+              <span>←</span>
+            </button>
+            <input 
+              type="text" 
+              id="date" 
+              v-model="dateInput" 
+              placeholder="dd/mm/yyyy"
+              class="date-input-text"
+              @blur="() => { const parsed = parseDateInput(dateInput); if (parsed) collection.date = parsed; }"
+              required 
+            />
+            <input 
+              type="date" 
+              v-model="collection.date" 
+              class="date-input-hidden"
+              @change="dateInput = formatDateForDisplay(collection.date)"
+            />
+            <button type="button" @click="toggleCalendar" class="calendar-toggle-button" title="Open calendar">
+              <span>📅</span>
+            </button>
+            <button type="button" @click="navigateDate('next')" class="date-nav-button" title="Next day">
+              <span>→</span>
+            </button>
+          </div>
+          <small class="date-help-text">Enter date as dd/mm/yyyy, use arrows, or click calendar</small>
+          
+          <!-- Calendar Widget -->
+          <div v-if="showCalendar" class="calendar-widget">
+            <div class="calendar-header">
+              <button type="button" @click="navigateCalendar('prev')" class="calendar-nav-button">
+                <span>‹</span>
+              </button>
+              <h3 class="calendar-month-year">{{ getCalendarMonthYear() }}</h3>
+              <button type="button" @click="navigateCalendar('next')" class="calendar-nav-button">
+                <span>›</span>
+              </button>
+            </div>
+            <div class="calendar-grid">
+              <div class="calendar-weekdays">
+                <div class="calendar-weekday">Sun</div>
+                <div class="calendar-weekday">Mon</div>
+                <div class="calendar-weekday">Tue</div>
+                <div class="calendar-weekday">Wed</div>
+                <div class="calendar-weekday">Thu</div>
+                <div class="calendar-weekday">Fri</div>
+                <div class="calendar-weekday">Sat</div>
+              </div>
+              <div class="calendar-days">
+                <button
+                  v-for="day in getCalendarDays()"
+                  :key="day.date.getTime()"
+                  type="button"
+                  @click="selectCalendarDate(day.date)"
+                  :class="{
+                    'calendar-day': true,
+                    'current-month': day.isCurrentMonth,
+                    'other-month': !day.isCurrentMonth,
+                    'today': day.isToday,
+                    'selected': day.isSelected
+                  }"
+                >
+                  {{ day.date.getDate() }}
+                </button>
+              </div>
+            </div>
+            <div class="calendar-footer">
+              <button type="button" @click="showCalendar = false" class="calendar-close-button">
+                Close Calendar
+              </button>
+            </div>
+          </div>
         </div>
         <div class="form-group">
           <label for="group_id">Group</label>
@@ -931,6 +1116,219 @@ td input.completed {
   max-width: 100%;
 }
 
+/* Enhanced Date Input Styles */
+.date-input-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  overflow: hidden;
+}
+
+.date-input-container:focus-within {
+  border-color: #3498db;
+  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.1);
+}
+
+.date-nav-button, .calendar-toggle-button {
+  background: #f8f9fa;
+  border: none;
+  padding: 0.75rem 0.5rem;
+  cursor: pointer;
+  color: #6c757d;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+}
+
+.date-nav-button:hover, .calendar-toggle-button:hover {
+  background: #e9ecef;
+  color: #495057;
+}
+
+.date-nav-button:active, .calendar-toggle-button:active {
+  background: #dee2e6;
+}
+
+.date-nav-button span, .calendar-toggle-button span {
+  font-size: 1.2rem;
+  font-weight: bold;
+}
+
+.calendar-toggle-button span {
+  font-size: 1rem;
+}
+
+.date-input-text {
+  flex: 1;
+  border: none;
+  padding: 0.75rem;
+  outline: none;
+  font-size: 1rem;
+  background: transparent;
+}
+
+.date-input-hidden {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+}
+
+.date-help-text {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+  color: #6c757d;
+  font-style: italic;
+}
+
+/* Calendar Widget Styles */
+.calendar-widget {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  margin-top: 0.5rem;
+  min-width: 300px;
+}
+
+.calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem;
+  border-bottom: 1px solid #eee;
+}
+
+.calendar-nav-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 4px;
+  color: #6c757d;
+  transition: all 0.2s ease;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.calendar-nav-button:hover {
+  background: #f8f9fa;
+  color: #495057;
+}
+
+.calendar-month-year {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.calendar-grid {
+  padding: 1rem;
+}
+
+.calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.calendar-weekday {
+  padding: 0.5rem;
+  text-align: center;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6c757d;
+}
+
+.calendar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.25rem;
+}
+
+.calendar-day {
+  padding: 0.75rem 0.5rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  font-size: 0.9rem;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.calendar-day.current-month {
+  color: #2c3e50;
+}
+
+.calendar-day.other-month {
+  color: #bdc3c7;
+}
+
+.calendar-day:hover {
+  background: #f8f9fa;
+}
+
+.calendar-day.today {
+  background: #e3f2fd;
+  color: #1976d2;
+  font-weight: 600;
+}
+
+.calendar-day.selected {
+  background: #3498db;
+  color: white;
+  font-weight: 600;
+}
+
+.calendar-day.selected:hover {
+  background: #2980b9;
+}
+
+.calendar-footer {
+  padding: 1rem;
+  border-top: 1px solid #eee;
+  text-align: center;
+}
+
+.calendar-close-button {
+  background: #95a5a6;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background-color 0.2s;
+}
+
+.calendar-close-button:hover {
+  background: #7f8c8d;
+}
+
+/* Adjust form-group to accommodate the help text and calendar */
+.form-group {
+  position: relative;
+  margin-bottom: 1.5rem;
+}
+
 /* Responsive styles */
 @media (max-width: 768px) {
   .form-row {
@@ -956,6 +1354,35 @@ td input.completed {
   .collection-form {
     padding: 1rem;
   }
+  
+  /* Calendar responsive adjustments */
+  .calendar-widget {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 90vw;
+    max-width: 350px;
+    margin-top: 0;
+  }
+  
+  .date-input-container {
+    flex-wrap: wrap;
+  }
+  
+  .date-nav-button, .calendar-toggle-button {
+    min-width: 35px;
+    padding: 0.6rem 0.4rem;
+  }
+  
+  .date-nav-button span, .calendar-toggle-button span {
+    font-size: 1rem;
+  }
+  
+  .calendar-day {
+    min-height: 35px;
+    font-size: 0.85rem;
+  }
 }
 
 /* Remove number input spinners */
@@ -969,7 +1396,6 @@ input[type="number"] {
   -moz-appearance: textfield;
   appearance: textfield;
 }
-
 
 .installment-balance {
   padding: 4px 0;

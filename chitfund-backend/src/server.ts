@@ -7,6 +7,7 @@ import groupRoutes from './routes/groups';
 import collectionRoutes from './routes/collections';
 import authRoutes from './routes/auth';
 import collectionBalanceRoutes from './routes/collection_balance';
+import dailySummaryRoutes from './routes/dailySummary';
 
 dotenv.config();
 
@@ -29,6 +30,7 @@ app.use('/api/groups', groupRoutes);
 app.use('/api/collections', collectionRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/collection-balance', collectionBalanceRoutes);
+app.use('/api/daily-summary', dailySummaryRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

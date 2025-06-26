@@ -326,9 +326,6 @@ router.put('/:id/members', async (req, res) => {
           VALUES (?, ?, ?, ?, ?)
         `).run(id, member.id, memberName, member.groupMemberId, new Date().toISOString());
       }
-
-      // Update group member count
-      db.prepare('UPDATE groups SET member_count = ? WHERE id = ?').run(members.length, id);
     });
 
     res.json({ message: 'Group members updated successfully' });

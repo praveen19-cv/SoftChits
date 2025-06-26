@@ -33,7 +33,7 @@
 
         <div class="group-info" v-if="groupDetails">
           <p><strong>Group:</strong> {{ groupDetails.name }}</p>
-          <p><strong>Current Members:</strong> {{ groupDetails.member_count }} / {{ groupDetails.member_count }}</p>
+          <p><strong>Current Members:</strong> {{ currentMemberCount }} / {{ groupDetails.member_count }}</p>
         </div>
 
         <div class="modal-actions">
@@ -84,6 +84,7 @@ const error = ref('')
 const members = ref([])
 const selectedMemberId = ref('')
 const groupDetails = ref(null)
+const currentMemberCount = ref(0)
 const notification = ref({
   show: false,
   message: '',
@@ -111,7 +112,6 @@ async function loadMembers() {
     members.value = await response.json()
     
   } catch (err) {
-    console.error('Error loading data:', err)
     error.value = 'Failed to load data. Please try again.'
     showNotification('Failed to load data', 'error')
   } finally {
@@ -122,9 +122,17 @@ async function loadMembers() {
 const loadGroupDetails = async () => {
   try {
     groupDetails.value = await store.fetchGroupById(props.groupId);
-    groupDetails.value.member_count = groupDetails.value.member_count; // Ensure member count is fetched from the group creation
+    
+    // Fetch current group members to get actual current count
+    const groupMembers = await store.fetchGroupMembers(props.groupId);
+    currentMemberCount.value = groupMembers.length;
+    
+    // IMPORTANT: groupDetails.value.member_count should be the max allowed members
+    // If it seems to be corrupted (equal to current members), we need to handle this
+    // For now, we'll trust the database value, but in production you might want
+    // to add validation or use a separate field for max_members
+    
   } catch (err) {
-    console.error('Error fetching group details:', err);
     error.value = 'Failed to fetch group details. Please try again.';
     showNotification('Failed to fetch group details', 'error');
   }
@@ -138,7 +146,7 @@ async function handleSubmit() {
     }
 
     // Check if adding this member would exceed the group's member limit
-    if (groupDetails.value && groupDetails.value.member_count >= groupDetails.value.member_count) {
+    if (groupDetails.value && currentMemberCount.value >= groupDetails.value.member_count) {
       error.value = `Cannot add more members. Group limit (${groupDetails.value.member_count}) reached.`
       showNotification(error.value, 'error')
       return
@@ -150,11 +158,13 @@ async function handleSubmit() {
     // Add member to group
     await store.addMemberToGroup(props.groupId, Number(selectedMemberId.value))
     
+    // Update current member count after successful addition
+    currentMemberCount.value += 1;
+    
     showNotification('Member added successfully')
     emit('member-added')
     emit('close')
   } catch (err) {
-    console.error('Error adding member to group:', err)
     error.value = err.response?.data?.message || 'Failed to add member to group. Please try again.'
     showNotification(error.value, 'error')
   } finally {

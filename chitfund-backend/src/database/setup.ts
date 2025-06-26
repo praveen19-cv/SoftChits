@@ -64,7 +64,7 @@ export async function initializeDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         total_amount REAL NOT NULL,
-        member_count INTEGER NOT NULL,
+        member_count INTEGER NOT NULL, -- Maximum allowed members (set during group creation)
         start_date TEXT NOT NULL,
         end_date TEXT NOT NULL,
         number_of_months INTEGER NOT NULL DEFAULT 0,

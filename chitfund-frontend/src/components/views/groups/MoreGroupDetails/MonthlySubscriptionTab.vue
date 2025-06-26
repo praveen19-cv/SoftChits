@@ -116,14 +116,15 @@ const saveCommission = async () => {
     // Create subscriptions array with updated data, preserving export status
     const subscriptions = months.value.map((month, index) => ({
       month_number: index + 1,
-      bid_amount: month.bidAmount,      total_dividend: month.totalDividend,
+      bid_amount: month.bidAmount,
+      total_dividend: month.totalDividend,
       distributed_dividend: month.distributedDividend,
       monthly_subscription: month.monthlySubscription,
       is_exported: month.isExported ? 1 : 0
     }))
-    
+
     await store.updateMonthlySubscriptions(props.groupId, subscriptions)
-      await store.fetchMonthlySubscriptions(props.groupId)
+    await store.fetchMonthlySubscriptions(props.groupId)
     const updatedSubscriptions = store.monthlySubscriptions as any[];
     for (let i = 0; i < months.value.length; i++) {
       const subscription = updatedSubscriptions.find((s: any) => s.month_number === i + 1);
@@ -328,7 +329,8 @@ const setMonthExportStatus = async (month: number, isExported: boolean) => {
     months.value[month - 1].isExported = isExported;
     showNotification(isExported ? 'Month marked as exported.' : 'Month export reset.');
   } catch (error: any) {
-    showNotification(error.message || 'Failed to update export status', 'error');  } finally {
+    showNotification(error.message || 'Failed to update export status', 'error');
+  } finally {
     loading.value = false;
   }
 }
@@ -342,13 +344,15 @@ const saveMonthData = async (monthIndex: number) => {
     const allSubscriptions = months.value.map((m, i) => ({
       month_number: i + 1,
       bid_amount: m.bidAmount,
-      total_dividend: m.totalDividend,      distributed_dividend: m.distributedDividend,
+      total_dividend: m.totalDividend,
+      distributed_dividend: m.distributedDividend,
       monthly_subscription: m.monthlySubscription,
       is_exported: m.isExported ? 1 : 0
     }))
 
     await store.updateMonthlySubscriptions(props.groupId, allSubscriptions)
-    await store.fetchMonthlySubscriptions(props.groupId);// Update the local state with the fresh data from backend
+    await store.fetchMonthlySubscriptions(props.groupId);
+
     const updatedSubscriptions = store.monthlySubscriptions as any[];
     for (let i = 0; i < months.value.length; i++) {
       const subscription = updatedSubscriptions.find((s: any) => s.month_number === i + 1);
@@ -374,9 +378,10 @@ const saveMonthlyData = async () => {
       total_dividend: month.totalDividend,
       distributed_dividend: month.distributedDividend,
       monthly_subscription: month.monthlySubscription,
-      is_exported: month.isExported ? 1 : 0 // Preserve export status
+      is_exported: month.isExported ? 1 : 0
     }))
-      await store.updateMonthlySubscriptions(props.groupId, subscriptions)
+
+    await store.updateMonthlySubscriptions(props.groupId, subscriptions)
     await store.fetchMonthlySubscriptions(props.groupId);
 
     const updatedSubscriptions = store.monthlySubscriptions as any[];
@@ -522,8 +527,8 @@ watch(months, () => {
 onMounted(async () => {
   try {
     loading.value = true;
-    
-    // Fetch existing data from monthly_subscription table and other related data    await loadData();
+
+    await loadData();
     
     await nextTick();
     
@@ -558,7 +563,8 @@ onMounted(async () => {
         <span>₹{{ commissionAmount.toLocaleString() }}</span>
       </div>
       <button 
-        class="save-button"        @click="saveCommission"
+        class="save-button"
+        @click="saveCommission"
         :disabled="loading"
       >
         {{ loading ? 'Saving...' : 'Save Commission' }}
@@ -574,7 +580,8 @@ onMounted(async () => {
             <div class="marker-line" v-if="index < months.length - 1"></div>
           </div>
           
-          <div class="timeline-content">            <div class="month-header">
+          <div class="timeline-content">
+            <div class="month-header">
               <h3>Month {{ index + 1 }}</h3>
               <span class="date">{{ formatDate(month.date) }}</span>
             </div>
@@ -597,7 +604,8 @@ onMounted(async () => {
                 <div class="field">
                   <label>Total Amount:</label>
                   <span>₹{{ groupDetails?.total_amount.toLocaleString() }}</span>
-                </div>                <div class="field">
+                </div>
+                <div class="field">
                   <label>Bid Amount:</label>
                   <input 
                     type="number" 
@@ -622,7 +630,8 @@ onMounted(async () => {
                   <span class="subscription-value">₹{{ month.monthlySubscription.toLocaleString() }}</span>
                 </div>
               </template>
-            </div>            <!-- Add Export, Save, and Reset buttons for all months -->
+            </div>
+
             <div class="action-buttons">
               <button 
                 class="save-button month-save-button" 
@@ -630,7 +639,8 @@ onMounted(async () => {
                 :disabled="loading"
               >
                 {{ loading ? 'Saving...' : 'Save' }}
-              </button>              <button 
+              </button>
+              <button 
                 class="export-button" 
                 :class="{ 'exported': month.isExported }"
                 @click="exportMonthPayout(index + 1)"
@@ -649,7 +659,8 @@ onMounted(async () => {
               </button>
             </div>
           </div>
-        </div>      </div>
+        </div>
+      </div>
     </div>
 
     <StandardNotification

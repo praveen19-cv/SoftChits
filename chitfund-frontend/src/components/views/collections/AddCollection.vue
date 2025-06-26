@@ -164,7 +164,10 @@ async function getPreviousCollections(memberId: number): Promise<ExistingCollect
 }
 
 async function handleGroupChange() {
-  // This is just for immediate feedback, the actual loading happens with the button
+  // Clear the collection sheet immediately when group changes
+  collectionSheet.value = [];
+  collectionBalances.value = [];
+  
   const group = groups.value.find(g => g.id === Number(collection.value.group_id))
   if (group) {
     selectedGroup.value = group
@@ -470,21 +473,51 @@ function validateForm() {
 }
 
 watch([
-  () => collection.value.date
-], async ([newDate], [oldDate]) => {
-  // Only handle date changes, not group changes (those are handled by the button)
-  if (newDate && selectedGroup.value) {
+  () => collection.value.date,
+  () => collection.value.group_id
+], async ([newDate, newGroupId], [oldDate, oldGroupId]) => {
+  // Clear collection sheet immediately when group changes
+  if (newGroupId !== oldGroupId) {
+    collectionSheet.value = [];
+    collectionBalances.value = [];
+    selectedGroup.value = null;
+    errorMessage.value = '';
+    return;
+  }
+  
+  // Handle date changes only if group hasn't changed
+  if (newDate !== oldDate && selectedGroup.value) {
+    // Clear existing collection sheet data when date changes
+    if (collectionSheet.value.length > 0) {
+      // Reset the collection sheet to show just member names without amounts
+      collectionSheet.value = collectionSheet.value.map(row => ({
+        ...row,
+        installment: '',
+        amount: '',
+        installmentBalances: {},
+        id: undefined
+      }));
+    }
+    
     // Check date validation
-    if (!validateDate(selectedGroup.value)) {
+    if (newDate && !validateDate(selectedGroup.value)) {
       errorMessage.value = 'Selected date must be from one month before group start date';
     } else {
       errorMessage.value = '';
       // Load existing collections if date is valid and we have a collection sheet
-      if (collectionSheet.value.length > 0) {
+      if (newDate && collectionSheet.value.length > 0) {
         await loadExistingCollections();
       }
     }
-  } else if (!newDate) {
+  } else if (!newDate && collectionSheet.value.length > 0) {
+    // Clear collection data when date is removed
+    collectionSheet.value = collectionSheet.value.map(row => ({
+      ...row,
+      installment: '',
+      amount: '',
+      installmentBalances: {},
+      id: undefined
+    }));
     errorMessage.value = '';
   }
 });

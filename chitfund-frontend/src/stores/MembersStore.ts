@@ -12,6 +12,14 @@ export interface Member {
   status: string;
   group_id: number;
 }
+export interface newMember {
+  id: number;
+  name: string;
+  phone: string;
+  email: string;
+  address: string;
+  status: string;
+}
 
 const useMembersStore = defineStore('members', () => {
   const members = ref<Member[]>([]);
@@ -27,7 +35,7 @@ const useMembersStore = defineStore('members', () => {
     return response.data;
   }
 
-  async function createMember(member: Omit<Member, 'id'>): Promise<Member> {
+  async function createMember(member: Omit<newMember, 'id'>): Promise<newMember> {
     const response: AxiosResponse<Member> = await api.post('/members', member);
     members.value.push(response.data);
     return response.data;

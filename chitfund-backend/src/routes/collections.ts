@@ -277,22 +277,39 @@ router.post('/', async (req, res) => {
         const payAmount = Math.min(remainingAmount, currentBalance.remaining_balance);
         const newRemainingBalance = currentBalance.remaining_balance - payAmount;
         const isCompleted = newRemainingBalance <= 0 ? 1 : 0;
-        // Insert into collections table for this installment
-        db.prepare(`
-          INSERT INTO ${collectionTableName} (
-            collection_date, group_id, member_id, installment_number, 
-            collection_amount, remaining_balance, is_completed, updated_remaining_balance
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          collection_date,
-          groupId,
-          memberId,
-          currentInstallment,
-          payAmount,
-          currentBalance.remaining_balance,
-          currentBalance.is_completed ? 1 : 0,
-          newRemainingBalance
-        );
+        // Check if a collection already exists for this combination
+        const existingCollection = db.prepare(`
+          SELECT id FROM ${collectionTableName}
+          WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
+        `).get(groupId, memberId, currentInstallment, collection_date) as { id: number } | undefined;
+        
+        if (existingCollection) {
+          // Update existing collection instead of inserting
+          db.prepare(`
+            UPDATE ${collectionTableName}
+            SET collection_amount = collection_amount + ?,
+                updated_remaining_balance = ?,
+                is_completed = ?
+            WHERE id = ?
+          `).run(payAmount, newRemainingBalance, isCompleted, existingCollection.id);
+        } else {
+          // Insert new collection record
+          db.prepare(`
+            INSERT INTO ${collectionTableName} (
+              collection_date, group_id, member_id, installment_number, 
+              collection_amount, remaining_balance, is_completed, updated_remaining_balance
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            collection_date,
+            groupId,
+            memberId,
+            currentInstallment,
+            payAmount,
+            currentBalance.remaining_balance,
+            currentBalance.is_completed ? 1 : 0,
+            newRemainingBalance
+          );
+        }
         // If remaining_balance is now 0, update is_completed to 1 for this row
         if (newRemainingBalance === 0) {
           db.prepare(`

@@ -79,8 +79,7 @@ onMounted(loadMember)
           type="tel"
           id="phone"
           v-model="member.phone"
-          required
-          placeholder="Enter phone number"
+          placeholder="Enter phone number (optional)"
         />
       </div>
 
@@ -90,8 +89,7 @@ onMounted(loadMember)
           type="email"
           id="email"
           v-model="member.email"
-          required
-          placeholder="Enter email address"
+          placeholder="Enter email address (optional)"
         />
       </div>
 
@@ -100,8 +98,7 @@ onMounted(loadMember)
         <textarea
           id="address"
           v-model="member.address"
-          required
-          placeholder="Enter address"
+          placeholder="Enter address (optional)"
           rows="3"
         ></textarea>
       </div>

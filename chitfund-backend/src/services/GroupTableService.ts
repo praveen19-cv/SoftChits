@@ -31,7 +31,7 @@ export class GroupTableService {
           updated_remaining_balance REAL,
           FOREIGN KEY (group_id) REFERENCES groups(id),
           FOREIGN KEY (member_id) REFERENCES members(id),
-          UNIQUE(group_id, member_id, installment_number)
+          UNIQUE(group_id, member_id, installment_number, collection_date)
         )
       `).run();
       tables.push(collectionsTableName);

@@ -21,7 +21,8 @@ async function handleSubmit() {
   try {
     loading.value = true
     error.value = ''
-    const newMember = { ...member.value, id: Date.now() }
+    // TODO: Replace 1 with the actual group_id as needed
+    const newMember = { ...member.value }
     await membersStore.createMember(newMember)
     router.push('/members')
   } catch (err: any) {
@@ -61,8 +62,7 @@ async function handleSubmit() {
           type="tel"
           id="phone"
           v-model="member.phone"
-          required
-          placeholder="Enter phone number"
+          placeholder="Enter phone number (optional)"
         />
       </div>
 
@@ -72,8 +72,7 @@ async function handleSubmit() {
           type="email"
           id="email"
           v-model="member.email"
-          required
-          placeholder="Enter email address"
+          placeholder="Enter email address (optional)"
         />
       </div>
 
@@ -82,8 +81,7 @@ async function handleSubmit() {
         <textarea
           id="address"
           v-model="member.address"
-          required
-          placeholder="Enter address"
+          placeholder="Enter address (optional)"
           rows="3"
         ></textarea>
       </div>

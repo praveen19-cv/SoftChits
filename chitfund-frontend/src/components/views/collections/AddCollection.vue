@@ -385,54 +385,127 @@ async function handleSubmit() {
       return;
     }
 
-    const collections = collectionSheet.value
-      .filter(row => row.memberId && row.amount !== undefined && !isNaN(parseFloat(row.amount)) && row.installment);
+    // Filter collections into two groups: ones to save and ones to delete
+    const collectionsToSave = collectionSheet.value
+      .filter(row => row.memberId && row.amount !== undefined && !isNaN(parseFloat(row.amount)) && row.installment && parseFloat(row.amount) > 0);
+    
+    const collectionsToDelete = collectionSheet.value
+      .filter(row => row.memberId && row.id && (
+        !row.amount || 
+        isNaN(parseFloat(row.amount)) || 
+        parseFloat(row.amount) <= 0 || 
+        !row.installment
+      ));
 
-    if (collections.length === 0) {
+    let hasError = false;
+
+    // First, handle deletions for rows that had data but now don't
+    for (const row of collectionsToDelete) {
+      try {
+        // Delete existing collections for this member on this date
+        const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
+          collection.value.date,
+          Number(collection.value.group_id)
+        );
+        const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
+        
+        for (const old of memberOldCollections) {
+          try {
+            await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
+          } catch (deleteError) {
+            console.warn('Failed to delete old collection:', deleteError);
+          }
+        }
+      } catch (error: any) {
+        hasError = true;
+        showErrorNotification(`Failed to delete collection for member ID ${row.memberId}: ${error.message}`);
+      }
+    }
+
+    // If there are no collections to save but we deleted some, that's still a success
+    if (collectionsToSave.length === 0 && collectionsToDelete.length === 0) {
       showErrorNotification('Please enter at least one amount to save collections.');
       return;
     }
 
-    let hasError = false;
+    // Now handle saves/updates
+    for (const row of collectionsToSave) {
+      // The backend expects simple data: just the amount and starting installment
+      // It will automatically distribute the payment across installments
+      const installmentNumbers = row.installment.split(',').map(inst => {
+        const cleanInst = inst.replace('c', '');
+        return parseInt(cleanInst);
+      }).filter(num => !isNaN(num));
 
-    for (const row of collections) {
+      // Use the first (lowest) installment number as the starting point
+      const startingInstallmentNumber = Math.min(...installmentNumbers) || 1;
+
       const payload = {
-        date: collection.value.date,
         group_id: Number(collection.value.group_id),
         member_id: row.memberId,
+        installment_number: startingInstallmentNumber,
+        collection_amount: parseFloat(row.amount),
+        date: collection.value.date,
+        // Backend doesn't need these, but included for compatibility
         installment: row.installment,
         amount: parseFloat(row.amount),
         member_name: members.value.find(m => m.id === row.memberId)?.name || '',
-        installment_number: parseInt(row.installment.split(',')[0]),
-        collection_amount: parseFloat(row.amount),
-        remaining_balance: 0, // Default value, adjust as needed
-        is_completed: 0, // Default value, adjust as needed
+        remaining_balance: 0,
+        is_completed: 0,
         created_at: new Date().toISOString(),
-        updated_remaining_balance: 0 // Default value, adjust as needed
+        updated_remaining_balance: 0
       };
 
       try {
         if (row.id) {
+          // For updates, delete ALL existing collections for this member and date first
           const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
             collection.value.date,
             Number(collection.value.group_id)
           );
           const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
+          
+          // Delete all old collections for this member on this date
           for (const old of memberOldCollections) {
-            await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
+            try {
+              await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
+            } catch (deleteError) {
+              console.warn('Failed to delete old collection:', deleteError);
+            }
           }
-          await collectionsStore.createCollection(payload);
-        } else {
-          await collectionsStore.createCollection(payload);
+          
+          // Wait longer to ensure all deletions are complete
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
+        
+        // Create the new collection - backend will handle installment distribution
+        await collectionsStore.createCollection(payload);
+        
       } catch (error: any) {
         hasError = true;
-        showErrorNotification(`Failed to save collection for member ID ${row.memberId}: ${error.response?.data?.message || error.message}`);
+        console.error('Error saving collection for member:', row.memberId, error);
+        const errorDetails = error.response?.data?.details || error.message || 'Unknown error';
+        showErrorNotification(`Failed to save collection for member ID ${row.memberId}: ${errorDetails}`);
+        
+        // If it's a unique constraint error, try a different approach
+        if (errorDetails.includes('UNIQUE constraint failed')) {
+          console.warn('Unique constraint violation detected, this suggests the record may already exist');
+        }
       }
     }
 
     if (!hasError) {
-      showSuccessNotification('Collections saved successfully!');
+      let message = '';
+      if (collectionsToSave.length > 0 && collectionsToDelete.length > 0) {
+        message = `Collections saved successfully! ${collectionsToSave.length} saved, ${collectionsToDelete.length} deleted.`;
+      } else if (collectionsToSave.length > 0) {
+        message = `${collectionsToSave.length} collections saved successfully!`;
+      } else if (collectionsToDelete.length > 0) {
+        message = `${collectionsToDelete.length} collections deleted successfully!`;
+      } else {
+        message = 'Collections updated successfully!';
+      }
+      showSuccessNotification(message);
     } else {
       showErrorNotification('Some collections failed to save. Please check the notifications for details.');
     }
@@ -485,40 +558,16 @@ watch([
     return;
   }
   
-  // Handle date changes only if group hasn't changed
-  if (newDate !== oldDate && selectedGroup.value) {
-    // Clear existing collection sheet data when date changes
-    if (collectionSheet.value.length > 0) {
-      // Reset the collection sheet to show just member names without amounts
-      collectionSheet.value = collectionSheet.value.map(row => ({
-        ...row,
-        installment: '',
-        amount: '',
-        installmentBalances: {},
-        id: undefined
-      }));
-    }
-    
-    // Check date validation
-    if (newDate && !validateDate(selectedGroup.value)) {
-      errorMessage.value = 'Selected date must be from one month before group start date';
-    } else {
-      errorMessage.value = '';
-      // Load existing collections if date is valid and we have a collection sheet
-      if (newDate && collectionSheet.value.length > 0) {
-        await loadExistingCollections();
-      }
-    }
-  } else if (!newDate && collectionSheet.value.length > 0) {
-    // Clear collection data when date is removed
-    collectionSheet.value = collectionSheet.value.map(row => ({
-      ...row,
-      installment: '',
-      amount: '',
-      installmentBalances: {},
-      id: undefined
-    }));
+  // Clear collection sheet immediately when date changes (same as group change behavior)
+  if (newDate !== oldDate) {
+    collectionSheet.value = [];
+    collectionBalances.value = [];
     errorMessage.value = '';
+    
+    // Only validate date if both date and group are selected
+    if (newDate && selectedGroup.value && !validateDate(selectedGroup.value)) {
+      errorMessage.value = 'Selected date must be from one month before group start date';
+    }
   }
 });
 

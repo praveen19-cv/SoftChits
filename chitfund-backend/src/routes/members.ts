@@ -56,10 +56,15 @@ router.post('/', async (req, res) => {
   try {
     const { name, phone, email, address } = req.body;
     
+    // Validate that name is provided and not empty
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+    
     const result = db.prepare(`
       INSERT INTO members (name, phone, email, address)
       VALUES (?, ?, ?, ?)
-    `).run(name, phone, email, address);
+    `).run(name.trim(), phone || null, email || null, address || null);
 
     const newMember = db.prepare('SELECT * FROM members WHERE id = ?').get(result.lastInsertRowid);
     res.status(201).json(newMember);
@@ -75,11 +80,16 @@ router.put('/:id', async (req, res) => {
   try {
     const { name, phone, email, address } = req.body;
     
+    // Validate that name is provided and not empty
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+    
     const result = db.prepare(`
       UPDATE members
       SET name = ?, phone = ?, email = ?, address = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(name, phone, email, address, req.params.id);
+    `).run(name.trim(), phone || null, email || null, address || null, req.params.id);
 
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Member not found' });

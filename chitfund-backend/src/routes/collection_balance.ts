@@ -1,7 +1,29 @@
 import express from 'express';
-import { getReadDb } from '../database/setup';
+import { getReadDb, Group } from '../database/setup';
 import { withRetry } from '../utils/dbUtils';
 import { GroupTableService } from '../services/GroupTableService';
+
+interface CollectionBalance {
+  id: number;
+  group_id: number;
+  member_id: number;
+  installment_number: number;
+  total_paid: number;
+  remaining_balance: number;
+  is_completed: boolean;
+  last_updated: string;
+  export_month?: number;
+  is_exported?: boolean;
+}
+
+interface GroupMember {
+  id: number;
+  group_id: number;
+  member_id: number;
+  member_name: string;
+  group_member_id: string;
+  created_at: string;
+}
 
 const router = express.Router();
 
@@ -31,9 +53,15 @@ router.get('/:groupId', async (req, res) => {
       return res.json([]);
     }
 
-    // Query all balances for this group
+    // Query all balances for this group with member names
     const balances = await withRetry(() =>
-      db.prepare(`SELECT * FROM ${balanceTableName}`).all()
+      db.prepare(`
+        SELECT cb.*, m.name as member_name
+        FROM ${balanceTableName} cb
+        LEFT JOIN members m ON cb.member_id = m.id
+        WHERE cb.group_id = ?
+        ORDER BY cb.member_id, cb.installment_number
+      `).all(groupId)
     );
     console.log('Balances query executed successfully.');
     res.json(balances);
@@ -141,6 +169,159 @@ router.get('/:groupId/pending-balance', async (req, res) => {
   } catch (error) {
     console.error('Error fetching pending installments:', error);
     res.status(500).json({ error: 'Failed to fetch pending installments', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// GET /api/collection-balance/:groupId/members-ordered
+router.get('/:groupId/members-ordered', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const db = getReadDb();
+    
+    // Get group info
+    const group = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
+    );
+    
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    
+    const groupMembersTableName = GroupTableService.getTableName(groupId, group.name, 'group_members');
+    
+    // Check if table exists
+    const tableExists = db.prepare(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' AND name=?
+    `).get(groupMembersTableName);
+
+    if (!tableExists) {
+      return res.status(404).json({ error: 'Group members table not found' });
+    }
+    
+    // Get members in the order they were added to the group
+    const members = await withRetry(() =>
+      db.prepare(`
+        SELECT gm.*, m.name, m.phone, m.email, m.address
+        FROM ${groupMembersTableName} gm
+        LEFT JOIN members m ON gm.member_id = m.id
+        WHERE gm.group_id = ?
+        ORDER BY gm.id ASC
+      `).all(groupId)
+    ) as (GroupMember & { name: string; phone: string; email: string; address: string })[];
+    
+    res.json(members);
+  } catch (error: any) {
+    console.error('Error fetching ordered group members:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/collection-balance/:groupId/customer-sheet-enhanced
+router.get('/:groupId/customer-sheet-enhanced', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const db = getReadDb();
+    
+    // Get group info
+    const group = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
+    );
+    
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    
+    const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
+    const collectionTableName = GroupTableService.getTableName(groupId, group.name, 'collection');
+    const groupMembersTableName = GroupTableService.getTableName(groupId, group.name, 'group_members');
+    
+    // Check if tables exist
+    const balanceTableExists = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='table' AND name=?
+    `).get(balanceTableName);
+    
+    const collectionTableExists = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='table' AND name=?
+    `).get(collectionTableName);
+    
+    const membersTableExists = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='table' AND name=?
+    `).get(groupMembersTableName);
+
+    if (!balanceTableExists || !collectionTableExists || !membersTableExists) {
+      return res.status(404).json({ error: 'Required tables not found' });
+    }
+    
+    // Get ordered members
+    const orderedMembers = await withRetry(() =>
+      db.prepare(`
+        SELECT gm.*, m.name, m.phone
+        FROM ${groupMembersTableName} gm
+        LEFT JOIN members m ON gm.member_id = m.id
+        WHERE gm.group_id = ?
+        ORDER BY gm.id ASC
+      `).all(groupId)
+    );
+    
+    // Get collection balances with completion details
+    const balancesQuery = `
+      SELECT 
+        cb.*,
+        CASE 
+          WHEN cb.is_completed = 1 THEN (
+            SELECT collection_date 
+            FROM ${collectionTableName} c 
+            WHERE c.group_id = cb.group_id 
+              AND c.member_id = cb.member_id 
+              AND c.installment_number = cb.installment_number 
+              AND c.is_completed = 1
+            ORDER BY c.created_at DESC 
+            LIMIT 1
+          )
+          ELSE NULL
+        END as completion_date,
+        CASE 
+          WHEN cb.is_completed = 1 THEN cb.total_paid
+          ELSE NULL
+        END as paid_amount
+      FROM ${balanceTableName} cb
+      WHERE cb.group_id = ?
+      ORDER BY cb.member_id, cb.installment_number
+    `;
+    
+    const balances = await withRetry(() =>
+      db.prepare(balancesQuery).all(groupId)
+    );
+    
+    // Get exported installments
+    const monthlySubscriptionTableName = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
+    let exportedInstallments: number[] = [];
+    
+    const subscriptionTableExists = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='table' AND name=?
+    `).get(monthlySubscriptionTableName);
+    
+    if (subscriptionTableExists) {
+      const exported = await withRetry(() =>
+        db.prepare(`
+          SELECT month_number, monthly_subscription
+          FROM ${monthlySubscriptionTableName}
+          WHERE group_id = ? AND is_exported = 1
+          ORDER BY month_number ASC
+        `).all(groupId)
+      );
+      exportedInstallments = exported.map((e: any) => e.month_number);
+    }
+    
+    res.json({
+      members: orderedMembers,
+      balances: balances,
+      exportedInstallments: exportedInstallments
+    });
+  } catch (error: any) {
+    console.error('Error fetching enhanced customer sheet data:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

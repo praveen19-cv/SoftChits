@@ -6,19 +6,46 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import ExcelJS from 'exceljs';
 
-interface CustomerSheetRow {
+interface CollectionBalanceRow {
+  id: number;
+  group_id: number;
   member_id: number;
-  member_name: string;
   installment_number: number;
-  is_completed: boolean;
   total_paid: number;
   remaining_balance: number;
+  is_completed: boolean;
+  last_updated: string;
+  completion_date?: string;
+  paid_amount?: number;
+}
+
+interface GroupMember {
+  id: number;
+  group_id: number;
+  member_id: number;
+  member_name: string;
+  group_member_id: string;
+  created_at: string;
+  name: string;
+  phone: string;
+  email?: string;
+  address?: string;
+}
+
+interface CustomerSheetData {
+  members: GroupMember[];
+  balances: CollectionBalanceRow[];
+  exportedInstallments: number[];
 }
 
 const groupsStore = useGroupsStore();
 const loading = ref(false);
 const selectedGroupId = ref<number | null>(null);
-const customerSheetData = ref<any[]>([]);
+const customerSheetData = ref<CustomerSheetData>({
+  members: [],
+  balances: [],
+  exportedInstallments: []
+});
 
 const filteredGroups = computed(() => groupsStore.groups);
 const groupSearch = ref('');
@@ -33,32 +60,38 @@ const selectedGroupName = computed(() => {
   return group ? group.name : '';
 });
 
+// Get ordered members from the new API
+const orderedMembers = computed(() => {
+  return customerSheetData.value.members.map((member, index) => ({
+    serialNo: index + 1,
+    id: member.member_id,
+    name: member.name || member.member_name,
+    phone: member.phone,
+    group_member_id: member.group_member_id
+  }));
+});
+
+// Get exported installments list
+const exportedInstallmentNumbers = computed(() => {
+  return customerSheetData.value.exportedInstallments.sort((a, b) => a - b);
+});
+
 // Fetch monthly subscription amounts for exported installments
 const monthlySubscriptionAmounts = ref<Record<number, number>>({});
-const exportedInstallmentNumbers = ref<number[]>([]); // List of exported installment numbers
-
 async function fetchMonthlySubscriptionAmounts(groupId: number) {
   try {
-    // Fetch all exported installments from monthly_subscription table for this group
     const group = groupsStore.groups.find(g => g.id === groupId);
     if (!group) return;
-    const groupName = group.name;
     const response = await api.get(`/collections/${groupId}/monthly-subscription`);
-    // Response should be an array of { month_number, monthly_subscription, is_exported }
     const exported = response.data.filter((row: any) => row.is_exported);
     const amounts: Record<number, number> = {};
-    const numbers: number[] = [];
     exported.forEach((row: any) => {
       amounts[row.month_number] = row.monthly_subscription;
-      numbers.push(row.month_number);
     });
-    // Sort by month_number
-    exportedInstallmentNumbers.value = numbers.sort((a, b) => a - b);
     monthlySubscriptionAmounts.value = amounts;
   } catch (error) {
     console.error('Error fetching monthly subscription amounts:', error);
     monthlySubscriptionAmounts.value = {};
-    exportedInstallmentNumbers.value = [];
   }
 }
 
@@ -66,38 +99,45 @@ watch(selectedGroupId, async (newVal) => {
   if (newVal) {
     loading.value = true;
     try {
-      const response = await api.get(`/collection-balance/${newVal}/customer-sheet`);
+      // Use the new enhanced customer sheet API
+      const response = await api.get(`/collection-balance/${newVal}/customer-sheet-enhanced`);
       customerSheetData.value = response.data;
       await fetchMonthlySubscriptionAmounts(newVal);
     } catch (error) {
       console.error('Error fetching customer sheet data:', error);
-      customerSheetData.value = [];
+      customerSheetData.value = {
+        members: [],
+        balances: [],
+        exportedInstallments: []
+      };
       monthlySubscriptionAmounts.value = {};
     } finally {
       loading.value = false;
     }
   } else {
-    customerSheetData.value = [];
+    customerSheetData.value = {
+      members: [],
+      balances: [],
+      exportedInstallments: []
+    };
     monthlySubscriptionAmounts.value = {};
   }
 });
 
 const installmentAmount = (num: number) => {
-  // Only show the amount if it exists and is exported, otherwise show '-'
   return typeof monthlySubscriptionAmounts.value[num] === 'number' && monthlySubscriptionAmounts.value[num] > 0
     ? monthlySubscriptionAmounts.value[num]
     : '-';
 };
 
 const memberTotals = computed(() => {
-  // For each member, calculate total paid and total balance
   const totals: Record<number, { paid: number; balance: number }> = {};
-  allMembers.value.forEach((member: { id: number; name: string }) => {
+  orderedMembers.value.forEach((member) => {
     let paid = 0;
     let balance = 0;
     exportedInstallmentNumbers.value.forEach(num => {
-      const row = customerSheetData.value.find(
-        (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
+      const row = customerSheetData.value.balances.find(
+        (r: CollectionBalanceRow) => r.member_id === member.id && r.installment_number === num
       );
       if (row) {
         paid += row.total_paid;
@@ -109,32 +149,11 @@ const memberTotals = computed(() => {
   return totals;
 });
 
-watch(selectedGroupId, async (newVal) => {
-  if (newVal) {
-    loading.value = true;
-    try {
-      const response = await api.get(`/collection-balance/${newVal}/customer-sheet`);
-      customerSheetData.value = response.data;
-    } catch (error) {
-      console.error('Error fetching customer sheet data:', error);
-      customerSheetData.value = [];
-    } finally {
-      loading.value = false;
-    }
-  } else {
-    customerSheetData.value = [];
-  }
-});
-
 onMounted(async () => {
   loading.value = true;
   await groupsStore.fetchGroups();
   loading.value = false;
 });
-
-function isCompleted(row: any) {
-  return row.is_completed;
-}
 
 function selectGroup(group: any) {
   selectedGroupId.value = group.id;
@@ -142,73 +161,124 @@ function selectGroup(group: any) {
   groupSearch.value = '';
 }
 
+// Helper to get balance data for a member and installment
+function getMemberInstallmentBalance(memberId: number, installmentNum: number): CollectionBalanceRow | undefined {
+  return customerSheetData.value.balances.find(
+    (row: CollectionBalanceRow) => row.member_id === memberId && row.installment_number === installmentNum
+  );
+}
+
 function downloadAsPDF() {
-  const doc = new jsPDF();
-  autoTable(doc, {
-    head: [['Name', ...exportedInstallmentNumbers.value.map(num => `Installment ${num}`)]],
-    body: allMembers.value.map(member => [
+  const doc = new jsPDF('landscape');
+  
+  // Prepare table data with serial numbers and two rows per member
+  const tableData: any[][] = [];
+  
+  orderedMembers.value.forEach(member => {
+    // First row: Pending balances (red)
+    const pendingRow = [
+      member.serialNo,
       member.name,
+      'Pending',
       ...exportedInstallmentNumbers.value.map(num => {
-        const row = customerSheetData.value.find(
-          (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
-        );
-        return row ? (row.is_completed ? row.total_paid : row.remaining_balance) : '-';
+        const balance = getMemberInstallmentBalance(member.id, num);
+        return balance && !balance.is_completed ? `₹${balance.remaining_balance}` : '-';
       })
-    ])
+    ];
+    
+    // Second row: Completed amounts with dates (green)
+    const completedRow = [
+      '',
+      '',
+      'Completed',
+      ...exportedInstallmentNumbers.value.map(num => {
+        const balance = getMemberInstallmentBalance(member.id, num);
+        if (balance && balance.is_completed) {
+          const amount = `₹${balance.paid_amount || balance.total_paid}`;
+          const date = balance.completion_date ? new Date(balance.completion_date).toLocaleDateString('en-GB') : '';
+          return `${amount}${date ? ` (${date})` : ''}`;
+        }
+        return '-';
+      })
+    ];
+    
+    tableData.push(pendingRow, completedRow);
   });
-  doc.save('CustomerSheet.pdf');
+
+  autoTable(doc, {
+    head: [['S.No', 'Name', 'Status', ...exportedInstallmentNumbers.value.map(num => `Inst ${num}`)]],
+    body: tableData,
+    styles: { fontSize: 8, cellPadding: 2 },
+    headStyles: { fillColor: [25, 118, 210] },
+    didParseCell: function(data) {
+      if (data.row.index % 2 === 0 && data.cell.text[0] !== '' && data.column.index === 2) {
+        // Pending row styling
+        data.cell.styles.textColor = [198, 40, 40];
+        data.cell.styles.fillColor = [255, 235, 238];
+      } else if (data.row.index % 2 === 1 && data.column.index === 2) {
+        // Completed row styling
+        data.cell.styles.textColor = [46, 125, 50];
+        data.cell.styles.fillColor = [232, 245, 233];
+      }
+    }
+  });
+  
+  doc.save(`CustomerSheet_${selectedGroupName.value}.pdf`);
 }
 
 function downloadAsExcel() {
   const workbook = new ExcelJS.Workbook();
-  const worksheet = workbook.addWorksheet('CustomerSheet');
+  const worksheet = workbook.addWorksheet('Customer Sheet');
 
   // Add header row
-  worksheet.addRow(['Name', ...exportedInstallmentNumbers.value.map(num => `Installment ${num}`)]);
+  const headerRow = worksheet.addRow(['Serial No', 'Name', 'Status', ...exportedInstallmentNumbers.value.map(num => `Installment ${num}`)]);
+  headerRow.font = { bold: true };
+  headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE3F0FD' } };
 
   // Add data rows
-  allMembers.value.forEach(member => {
-    const rowData = [
+  orderedMembers.value.forEach(member => {
+    // Pending row
+    const pendingRow = worksheet.addRow([
+      member.serialNo,
       member.name,
+      'Pending',
       ...exportedInstallmentNumbers.value.map(num => {
-        const row = customerSheetData.value.find(
-          (r: CustomerSheetRow) => r.member_id === member.id && r.installment_number === num
-        );
-        return row ? (row.is_completed ? row.total_paid : row.remaining_balance) : '-';
+        const balance = getMemberInstallmentBalance(member.id, num);
+        return balance && !balance.is_completed ? balance.remaining_balance : 0;
       })
-    ];
-    worksheet.addRow(rowData);
+    ]);
+    pendingRow.getCell(3).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFEBEE' } };
+    pendingRow.getCell(3).font = { color: { argb: 'FFC62828' } };
+
+    // Completed row
+    const completedRow = worksheet.addRow([
+      '',
+      '',
+      'Completed',
+      ...exportedInstallmentNumbers.value.map(num => {
+        const balance = getMemberInstallmentBalance(member.id, num);
+        if (balance && balance.is_completed) {
+          return `₹${balance.paid_amount || balance.total_paid}${balance.completion_date ? ` (${new Date(balance.completion_date).toLocaleDateString('en-GB')})` : ''}`;
+        }
+        return '-';
+      })
+    ]);
+    completedRow.getCell(3).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+    completedRow.getCell(3).font = { color: { argb: 'FF2E7D32' } };
   });
 
-  // Save the file
+  // Auto-fit columns
+  worksheet.columns.forEach(column => {
+    column.width = 15;
+  });
+
   workbook.xlsx.writeBuffer().then(buffer => {
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = 'CustomerSheet.xlsx';
+    link.download = `CustomerSheet_${selectedGroupName.value}.xlsx`;
     link.click();
   });
-}
-
-// Add this computed property to get all members for the selected group
-const allMembers = computed(() => {
-  if (!selectedGroupId.value) return [];
-  // Get unique members from customerSheetData
-  const seen = new Set<number>();
-  return customerSheetData.value
-    .filter(row => {
-      if (seen.has(row.member_id)) return false;
-      seen.add(row.member_id);
-      return true;
-    })
-    .map(row => ({ id: row.member_id, name: row.member_name }));
-});
-
-// Helper to get a row for a member and installment, or undefined
-function getMemberInstallmentRow(memberId: number, installmentNum: number): CustomerSheetRow | undefined {
-  return customerSheetData.value.find(
-    (row: CustomerSheetRow) => row.member_id === memberId && row.installment_number === installmentNum
-  );
 }
 
 </script>
@@ -247,44 +317,71 @@ function getMemberInstallmentRow(memberId: number, installmentNum: number): Cust
     </div>
     <div v-if="loading" class="cs-loading">Loading...</div>
     <div v-else>
-      <div v-if="selectedGroupId && customerSheetData.length" class="cs-table-wrap">
+      <div v-if="selectedGroupId && orderedMembers.length" class="cs-table-wrap">
         <table class="cs-table">
           <thead>
             <tr>
-              <th rowspan="2">Name</th>
+              <th rowspan="3">S.No</th>
+              <th rowspan="3">Name</th>
+              <th rowspan="3">Status</th>
               <th v-for="num in exportedInstallmentNumbers" :key="num" colspan="1">
                 Installment {{ num }}
               </th>
-              <th rowspan="2">Total Paid</th>
-              <th rowspan="2">Total Balance</th>
+              <th rowspan="3">Total Paid</th>
+              <th rowspan="3">Total Balance</th>
             </tr>
             <tr>
-              <th v-for="num in exportedInstallmentNumbers" :key="'amt-' + num" style="font-size:0.95em; color:#1976d2; background:#e3f0fd; font-weight:600;">
+              <th v-for="num in exportedInstallmentNumbers" :key="'amt-' + num" style="font-size:0.9em; color:#1976d2; background:#e3f0fd; font-weight:600;">
                 ₹{{ installmentAmount(num).toLocaleString() }}
               </th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="member in allMembers" :key="member.id">
-              <td class="cs-name">{{ member.name }}</td>
-              <td v-for="num in exportedInstallmentNumbers" :key="num">
-                <span :class="(() => { const row = getMemberInstallmentRow(member.id, num); return row && row.is_completed ? 'paid' : 'unpaid'; })()">
-                  {{
-                    (() => {
-                      const row = getMemberInstallmentRow(member.id, num);
-                      if (!row) return '-';
-                      return row.is_completed ? row.total_paid : row.remaining_balance;
-                    })()
-                  }}
-                </span>
-              </td>
-              <td><b>₹{{ memberTotals[member.id]?.paid?.toLocaleString() || 0 }}</b></td>
-              <td><b>₹{{ memberTotals[member.id]?.balance?.toLocaleString() || 0 }}</b></td>
-            </tr>
+            <template v-for="member in orderedMembers" :key="member.id">
+              <!-- Pending Balance Row (Red) -->
+              <tr class="pending-row">
+                <td rowspan="2" class="cs-serial">{{ member.serialNo }}</td>
+                <td rowspan="2" class="cs-name">{{ member.name }}</td>
+                <td class="cs-status pending">Pending</td>
+                <td v-for="num in exportedInstallmentNumbers" :key="'pending-' + num" class="cs-balance">
+                  <span class="balance-pending">
+                    {{
+                      (() => {
+                        const balance = getMemberInstallmentBalance(member.id, num);
+                        return balance && !balance.is_completed ? `₹${balance.remaining_balance.toLocaleString()}` : '-';
+                      })()
+                    }}
+                  </span>
+                </td>
+                <td rowspan="2" class="cs-total"><b>₹{{ memberTotals[member.id]?.paid?.toLocaleString() || 0 }}</b></td>
+                <td rowspan="2" class="cs-total"><b>₹{{ memberTotals[member.id]?.balance?.toLocaleString() || 0 }}</b></td>
+              </tr>
+              <!-- Completed Amount Row (Green) -->
+              <tr class="completed-row">
+                <td class="cs-status completed">Completed</td>
+                <td v-for="num in exportedInstallmentNumbers" :key="'completed-' + num" class="cs-balance">
+                  <span class="balance-completed">
+                    {{
+                      (() => {
+                        const balance = getMemberInstallmentBalance(member.id, num);
+                        if (balance && balance.is_completed) {
+                          const amount = `₹${(balance.paid_amount || balance.total_paid).toLocaleString()}`;
+                          const date = balance.completion_date ? new Date(balance.completion_date).toLocaleDateString('en-GB') : '';
+                          return `${amount}${date ? ` (${date})` : ''}`;
+                        }
+                        return '-';
+                      })()
+                    }}
+                  </span>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
-      <div v-else class="cs-no-data">No data found for this group.</div>
+      <div v-else class="cs-no-data">
+        {{ selectedGroupId ? 'No data found for this group.' : 'Please select a group to view customer sheet.' }}
+      </div>
     </div>
   </div>
 </template>
@@ -295,7 +392,7 @@ function getMemberInstallmentRow(memberId: number, installmentNum: number): Cust
   border-radius: 12px;
   box-shadow: 0 2px 12px rgba(0,0,0,0.07);
   padding: 2rem 2.5rem;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 2rem auto;
   font-family: 'Segoe UI', Arial, sans-serif;
 }
@@ -383,10 +480,11 @@ function getMemberInstallmentRow(memberId: number, installmentNum: number): Cust
   box-shadow: 0 1px 6px rgba(25,118,210,0.04);
 }
 .cs-table th, .cs-table td {
-  padding: 0.7rem 1rem;
+  padding: 0.6rem 0.8rem;
   border-bottom: 1px solid #e3e8ee;
   text-align: center;
-  font-size: 1rem;
+  font-size: 0.95rem;
+  vertical-align: middle;
 }
 .cs-table th {
   background: #e3f0fd;
@@ -396,35 +494,103 @@ function getMemberInstallmentRow(memberId: number, installmentNum: number): Cust
 .cs-table tr:last-child td {
   border-bottom: none;
 }
+
+/* Serial number column */
+.cs-serial {
+  font-weight: 600;
+  color: #1976d2;
+  background: #f8fafe;
+  text-align: center;
+  width: 50px;
+}
+
+/* Member name column */
 .cs-name {
   font-weight: 500;
   color: #333;
   text-align: left;
+  min-width: 150px;
 }
-.paid {
-  color: #2e7d32;
+
+/* Status column styling */
+.cs-status {
   font-weight: 600;
-  background: #e8f5e9;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.6rem;
   border-radius: 4px;
-  padding: 0.2rem 0.5rem;
+  min-width: 80px;
 }
-.unpaid {
+
+.cs-status.pending {
+  background: #ffebee;
+  color: #c62828;
+  border: 1px solid #ffcdd2;
+}
+
+.cs-status.completed {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #c8e6c9;
+}
+
+/* Balance cells */
+.cs-balance {
+  min-width: 100px;
+}
+
+.balance-pending {
   color: #c62828;
   font-weight: 600;
   background: #ffebee;
   border-radius: 4px;
-  padding: 0.2rem 0.5rem;
+  padding: 0.2rem 0.4rem;
+  display: inline-block;
+  font-size: 0.9rem;
 }
+
+.balance-completed {
+  color: #2e7d32;
+  font-weight: 600;
+  background: #e8f5e9;
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  display: inline-block;
+  font-size: 0.85rem;
+  line-height: 1.2;
+}
+
+/* Row styling */
+.pending-row {
+  background: #fafafa;
+}
+
+.completed-row {
+  background: #f8f8f8;
+  border-bottom: 2px solid #e0e0e0 !important;
+}
+
+/* Total columns */
+.cs-total {
+  font-weight: bold;
+  color: #1976d2;
+  background: #f0f7ff;
+  min-width: 120px;
+}
+
 .cs-loading, .cs-error, .cs-no-data {
   margin-top: 2.5rem;
   text-align: center;
   color: #888;
   font-size: 1.1rem;
+  padding: 2rem;
 }
+
 .material-icons {
   font-size: 1.2rem;
   vertical-align: middle;
 }
+
 .cs-download-btn {
   background-color: #1976d2;
   color: white;
@@ -433,8 +599,37 @@ function getMemberInstallmentRow(memberId: number, installmentNum: number): Cust
   border-radius: 6px;
   cursor: pointer;
   transition: background-color 0.3s;
+  font-size: 0.9rem;
 }
+
 .cs-download-btn:hover {
   background-color: #1565c0;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .customer-sheet {
+    padding: 1rem;
+    margin: 1rem;
+  }
+  
+  .cs-header {
+    flex-direction: column;
+    gap: 1rem;
+    align-items: stretch;
+  }
+  
+  .cs-actions {
+    justify-content: center;
+  }
+  
+  .cs-table th, .cs-table td {
+    font-size: 0.8rem;
+    padding: 0.4rem 0.5rem;
+  }
+  
+  .balance-completed {
+    font-size: 0.75rem;
+  }
 }
 </style>

@@ -395,30 +395,54 @@ async function handleAmountChange(row: CollectionSheetRow) {
   const amount = parseFloat(row.amount);
   const monthlySubscription = calculateMonthlySubscription();
 
-  const previousCollections = await getPreviousCollections(row.memberId);
+  // Get the member's current balances to determine which installments can be paid
+  const memberBalances = collectionBalances.value
+    .filter(b => b.member_id === row.memberId)
+    .sort((a, b) => a.installment_number - b.installment_number);
 
-  const totalPaid = previousCollections.reduce((sum, c) => sum + c.collection_amount, 0);
+  if (memberBalances.length === 0) {
+    // If no balances exist, assume starting from installment 1
+    const numInstallments = Math.floor(amount / monthlySubscription);
+    const remainder = amount % monthlySubscription;
+    
+    const installments = [];
+    for (let i = 1; i <= numInstallments; i++) {
+      installments.push(`${i}c`);
+    }
+    if (remainder > 0) {
+      installments.push(`${numInstallments + 1}`);
+    }
+    
+    row.installment = installments.join(',');
+  } else {
+    // Use existing balances to calculate which installments will be affected
+    let remainingAmount = amount;
+    const installments = [];
+    const installmentBalances: { [key: number]: number } = {};
 
-  const completedInstallments = Math.floor(totalPaid / monthlySubscription);
-  const currentAmount = totalPaid % monthlySubscription;
-
-  const totalAmount = currentAmount + amount;
-  const newCompletedInstallments = Math.floor(totalAmount / monthlySubscription);
-
-  const installments = [];
-  for (let i = 1; i <= completedInstallments; i++) {
-    installments.push(`${i}c`);
+    for (const balance of memberBalances) {
+      if (remainingAmount <= 0) break;
+      
+      if (balance.remaining_balance > 0) {
+        const payAmount = Math.min(remainingAmount, balance.remaining_balance);
+        const newBalance = balance.remaining_balance - payAmount;
+        
+        if (newBalance <= 0) {
+          installments.push(`${balance.installment_number}c`);
+          installmentBalances[balance.installment_number] = 0;
+        } else {
+          installments.push(`${balance.installment_number}`);
+          installmentBalances[balance.installment_number] = newBalance;
+        }
+        
+        remainingAmount -= payAmount;
+      }
+    }
+    
+    row.installment = installments.join(',');
+    row.installmentBalances = installmentBalances;
   }
-  for (let i = completedInstallments + 1; i <= completedInstallments + newCompletedInstallments; i++) {
-    installments.push(`${i}c`);
-  }
-  if (totalAmount % monthlySubscription > 0) {
-    installments.push(`${completedInstallments + newCompletedInstallments + 1}`);
-  }
 
-  row.installment = installments.join(',');
-
-  handleInstallmentChange(row);
   calculateUpdatedInstallmentBalances(row);
 }
 
@@ -540,15 +564,7 @@ async function handleSubmit() {
         member_id: row.memberId,
         installment_number: startingInstallmentNumber,
         collection_amount: parseFloat(row.amount),
-        date: collection.value.date,
-        // Backend doesn't need these, but included for compatibility
-        installment: row.installment,
-        amount: parseFloat(row.amount),
-        member_name: members.value.find(m => m.id === row.memberId)?.name || '',
-        remaining_balance: 0,
-        is_completed: 0,
-        created_at: new Date().toISOString(),
-        updated_remaining_balance: 0
+        date: collection.value.date
       };
 
       try {

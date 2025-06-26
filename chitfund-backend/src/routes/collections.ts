@@ -242,6 +242,8 @@ router.post('/', async (req, res) => {
   const db = getWriteDb();
   try {
     const { group_id, member_id, collection_date, installment_number, collection_amount } = req.body;
+    
+    
     const groupId = parseInt(group_id, 10);
     const memberId = parseInt(member_id, 10);
     let installmentNum = parseInt(installment_number, 10);
@@ -260,6 +262,20 @@ router.post('/', async (req, res) => {
     }
     const collectionTableName = `collection_${group_id}_${group.name.toUpperCase()}`;
     const balanceTableName = `collection_balance_${group_id}_${group.name.toUpperCase()}`;
+    
+    
+    
+    // Debug: Check what balance records exist for this member
+    try {
+      const allBalances = db.prepare(`
+        SELECT * FROM ${balanceTableName}
+        WHERE group_id = ? AND member_id = ?
+        ORDER BY installment_number
+      `).all(groupId, memberId);
+    } catch (balanceError: any) {
+      console.log('Error checking balance records:', balanceError?.message || balanceError);
+    }
+    
     let remainingAmount = amount;
     let currentInstallment = installmentNum;
     let affectedInstallments: {installment: number, paid: number}[] = [];
@@ -271,9 +287,17 @@ router.post('/', async (req, res) => {
           FROM ${balanceTableName}
           WHERE group_id = ? AND member_id = ? AND installment_number = ?
         `).get(groupId, memberId, currentInstallment) as { remaining_balance: number; total_paid: number; is_completed: number } | undefined;
-        if (!currentBalance || currentBalance.is_completed) {
-          // If no more installments or already completed, stop
+        if (!currentBalance) {
+          console.log(`Stopping: no balance found for installment ${currentInstallment}`);
+          // If no more installments, stop
           break;
+        }
+        
+        if (currentBalance.is_completed) {
+          console.log(`Skipping completed installment ${currentInstallment}, moving to next`);
+          // Skip completed installments and continue to next
+          currentInstallment++;
+          continue;
         }
         const payAmount = Math.min(remainingAmount, currentBalance.remaining_balance);
         const newRemainingBalance = currentBalance.remaining_balance - payAmount;
@@ -344,6 +368,7 @@ router.post('/', async (req, res) => {
         remainingAmount -= payAmount;
         currentInstallment++;
       }
+
     });
     // Get all balances for this member to show breakup
     const memberBalances = await withRetry(() =>
@@ -584,9 +609,6 @@ async function ensureTableColumns(db: BetterSqliteDatabase, tableName: string) {
         `).run()
       );
     } else if (hasExportMonth.type !== 'NUMBER') {
-      // Need to recreate the table with correct column type
-      console.log(`Need to update export_month column type from ${hasExportMonth.type} to NUMBER`);
-      
       // Get all column definitions
       const columns = await withRetry(() => 
         writeDb.prepare(`PRAGMA table_info(${tableName})`).all() as {name: string, type: string}[]
@@ -670,9 +692,6 @@ router.get('/group/:groupId/next-month-status/:month', async (req, res) => {
 
     // Get the dynamic table name for monthly_subscription
     const monthlySubscriptionTable = GroupTableService.getTableName(Number(groupId), group.name, 'monthly_subscription');
-    
-    console.log(`Checking export status for group ${groupId}, month ${month} in table ${monthlySubscriptionTable}`);
-
     // First check if the table exists
     const tableExists = await withRetry(() => 
       db.prepare(`
@@ -699,9 +718,6 @@ router.get('/group/:groupId/next-month-status/:month', async (req, res) => {
       console.log(`No monthly subscription record found for group ${groupId}, month ${month}`);
       return res.json({ isExported: false });
     }
-
-    console.log(`Monthly subscription export status for group ${groupId}, month ${month}: ${msRecord.is_exported}`);
-
     // Return true if is_exported is 1
     res.json({ isExported: msRecord.is_exported === 1 });
 
@@ -722,9 +738,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
     if (isNaN(groupId) || isNaN(month) || !monthly_subscription) {
       return res.status(400).json({ error: 'Invalid group ID, month, or missing monthly subscription' });
     }
-
-    console.log(`Export request received for groupId: ${groupId}, month: ${month}, monthly subscription: ${monthly_subscription}`);
-
     // Get group details
     const group = await withRetry(() => 
       db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
@@ -741,10 +754,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
     const balanceTableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection_balance');
     const groupMembersTableName = GroupTableService.getTableName(Number(groupId), group.name, 'group_members');
 
-    console.log(`Using monthly subscription table: ${monthlySubscriptionTable}`);
-    console.log(`Using balance table: ${balanceTableName}`);
-    console.log(`Using group members table: ${groupMembersTableName}`);
-
     // Execute all updates in a transaction
     await executeTransaction(db, async () => {      // 1. Get group members
       const members = await withRetry(() => 
@@ -759,9 +768,7 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
         throw new Error('No members found in group');
       }
 
-      // 2. Update monthly subscription table first
-      console.log(`Updating monthly_subscription table for groupId: ${groupId}, month: ${month}`);
-      
+
       // Check if entry exists first
       const existingMS = await withRetry(() => 
         db.prepare(`
@@ -771,7 +778,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
         `).get(groupId, month)
       );
       
-      console.log('existingMS:', existingMS);
       
       if (existingMS) {
         // Update existing entry
@@ -783,7 +789,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
             WHERE group_id = ? AND month_number = ?
           `).run(monthly_subscription, groupId, month)
         );
-        console.log(`Updated monthly subscription table, rows affected: ${updateMSResult.changes}`);
 
         // Immediately check the row after update
         const msCheck = await withRetry(() =>
@@ -792,7 +797,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
             WHERE group_id = ? AND month_number = ?
           `).get(groupId, month)
         );
-        console.log('After update, msCheck:', msCheck);
 
         // If update did not affect any rows, force an insert
         if (updateMSResult.changes === 0) {
@@ -811,7 +815,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
               WHERE group_id = ? AND month_number = ?
             `).get(groupId, month)
           );
-          console.log('After forced insert, msCheck:', msCheckAfterInsert);
         }
       } else {
         // Insert new entry
@@ -830,7 +833,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
       const allRowsAfter = await withRetry(() =>
         db.prepare(`SELECT * FROM ${monthlySubscriptionTable} WHERE group_id = ? ORDER BY month_number`).all(groupId)
       );
-      console.log('All rows after update/insert:', allRowsAfter);
 
       // 3. First delete any existing collection_balance entries for this month
       const deleteResult = await withRetry(() => 
@@ -840,8 +842,6 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
         `).run(groupId, month)
       );
       
-      console.log(`Deleted ${deleteResult.changes} existing balance entries`);
-
       // 4. Create new collection balance entries for each member
       for (const member of members) {
         await withRetry(() => 
@@ -914,10 +914,6 @@ router.post('/group/:groupId/reset-next-month', async (req, res) => {
     // Get the dynamic table names
     const monthlySubscriptionTable = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
     const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
-    
-    console.log(`Starting reset for group ${groupId}, month ${month}`);
-    console.log(`Using monthly subscription table: ${monthlySubscriptionTable}`);
-    console.log(`Using balance table: ${balanceTableName}`);
 
     // Execute all updates in a transaction
     await executeTransaction(db, async () => {
@@ -941,8 +937,6 @@ router.post('/group/:groupId/reset-next-month', async (req, res) => {
           WHERE group_id = ? AND month_number = ?
         `).run(groupId, month)
       );
-      
-      console.log(`Reset is_exported flag in monthly subscription table, rows affected: ${updateMSResult.changes}`);
 
       // 3. DELETE collection balance entries instead of updating them
       const deleteBalanceResult = await withRetry(() => 
@@ -1021,7 +1015,8 @@ router.get('/:groupId/customer-sheet', async (req, res) => {
     // Fetch collections for the customer in the date range
     const collections = await withRetry(() =>
       db.prepare(`
-        SELECT c.*, m.name as member_name
+        SELECT c.*, m.name as member_name,
+               c.remaining_balance as updated_remaining_balance
         FROM ${collectionsTableName} c
         JOIN members m ON c.member_id = m.id
         WHERE c.group_id = ? AND c.member_id = ?
@@ -1106,7 +1101,6 @@ router.put('/:groupId/monthly-subscription/:month/export', async (req, res) => {
         `).run(is_exported ? 1 : 0, groupId, month)
       );
       
-      console.log(`Updated ${updateResult.changes} rows in monthly subscription table`);      // Verify the update was successful
       const verifyResult = await withRetry(() =>
         db.prepare(`          SELECT is_exported
           FROM ${monthlySubscriptionTable}
@@ -1114,7 +1108,6 @@ router.put('/:groupId/monthly-subscription/:month/export', async (req, res) => {
         `).get(groupId, month) as { is_exported: number }
       );
 
-      console.log('Verification result:', verifyResult);
 
       if (!verifyResult || verifyResult.is_exported !== (is_exported ? 1 : 0)) {
         throw new Error('Failed to update monthly subscription status');

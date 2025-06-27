@@ -63,6 +63,7 @@ const showCalendar = ref(false)
 const calendarDate = ref(new Date())
 
 const collectionSheet = ref<CollectionSheetRow[]>([])
+const originalCollectionSheet = ref<CollectionSheetRow[]>([]) // Track original state for comparison
 const collectionBalances = ref<CollectionBalance[]>([])
 const selectedGroup = ref<Group | null>(null)
 const errorMessage = ref('')
@@ -295,6 +296,9 @@ async function loadExistingCollections() {
       });
     }
 
+    // Save the original state after loading data
+    saveOriginalState();
+
   } catch (error) {
     console.error('Error loading collection data:', error);
     showErrorNotification('Failed to load collection data');
@@ -378,6 +382,9 @@ async function loadGroupMembers() {
     // Load existing collections if date is also selected
     if (collection.value.date) {
       await loadExistingCollections();
+    } else {
+      // If no date selected yet, save the current state as original
+      saveOriginalState();
     }
 
     showSuccessNotification(`Loaded ${groupMembersFiltered.length} members for ${group.name}`);
@@ -432,6 +439,85 @@ function handleInstallmentChange(row: CollectionSheetRow) {
   // Any additional validation can be added here
 }
 
+// Helper functions for tracking changes and selective updates
+// This system tracks the original state when data is loaded and only
+// submits changes for rows that have actually been modified by the user
+function saveOriginalState() {
+  originalCollectionSheet.value = JSON.parse(JSON.stringify(collectionSheet.value));
+}
+
+function getChangedRows(): { 
+  toSave: CollectionSheetRow[], 
+  toDelete: CollectionSheetRow[], 
+  unchanged: CollectionSheetRow[] 
+} {
+  const toSave: CollectionSheetRow[] = [];
+  const toDelete: CollectionSheetRow[] = [];
+  const unchanged: CollectionSheetRow[] = [];
+  
+  for (const currentRow of collectionSheet.value) {
+    const originalRow = originalCollectionSheet.value.find(orig => orig.memberId === currentRow.memberId);
+    
+    // If no original row exists, this is new data
+    if (!originalRow) {
+      if (currentRow.memberId && currentRow.amount && !isNaN(parseFloat(currentRow.amount)) && 
+          currentRow.installment && parseFloat(currentRow.amount) > 0) {
+        toSave.push(currentRow);
+      }
+      continue;
+    }
+    
+    // Check if row has meaningful data now
+    const hasCurrentData = currentRow.memberId && currentRow.amount && 
+                          !isNaN(parseFloat(currentRow.amount)) && 
+                          currentRow.installment && parseFloat(currentRow.amount) > 0;
+    
+    // Check if row had meaningful data before
+    const hadOriginalData = originalRow.amount && !isNaN(parseFloat(originalRow.amount)) && 
+                           originalRow.installment && parseFloat(originalRow.amount) > 0;
+    
+    // Compare actual values for changes
+    const amountChanged = originalRow.amount !== currentRow.amount;
+    const installmentChanged = originalRow.installment !== currentRow.installment;
+    const hasChanges = amountChanged || installmentChanged;
+    
+    if (hadOriginalData && !hasCurrentData) {
+      // Had data before, now doesn't - mark for deletion
+      toDelete.push({ ...originalRow });
+    } else if (hasCurrentData && (hasChanges || !hadOriginalData)) {
+      // Has data now and either changed or is new - mark for save
+      toSave.push(currentRow);
+    } else {
+      // No changes
+      unchanged.push(currentRow);
+    }
+  }
+  
+  return { toSave, toDelete, unchanged };
+}
+
+// Debug function to help test change tracking (can be removed later)
+function debugChanges() {
+  const { toSave, toDelete, unchanged } = getChangedRows();
+  console.log('Debug Changes:', {
+    toSave: toSave.map(r => ({ memberId: r.memberId, name: r.memberName, amount: r.amount, installment: r.installment })),
+    toDelete: toDelete.map(r => ({ memberId: r.memberId, name: r.memberName, amount: r.amount, installment: r.installment })),
+    unchanged: unchanged.map(r => ({ memberId: r.memberId, name: r.memberName, amount: r.amount, installment: r.installment }))
+  });
+  return { toSave, toDelete, unchanged };
+}
+
+async function deleteSpecificCollections(memberCollections: ExistingCollection[]) {
+  for (const collection of memberCollections) {
+    try {
+      await collectionsStore.deleteCollection(collection.id, Number(collection.group_id));
+    } catch (deleteError) {
+      console.warn('Failed to delete collection:', collection.id, deleteError);
+      throw deleteError;
+    }
+  }
+}
+
 async function handleSubmit() {
   try {
     errorMessage.value = '';
@@ -440,36 +526,28 @@ async function handleSubmit() {
       return;
     }
 
-    // Filter collections into two groups: ones to save and ones to delete
-    const collectionsToSave = collectionSheet.value
-      .filter(row => row.memberId && row.amount !== undefined && !isNaN(parseFloat(row.amount)) && row.installment && parseFloat(row.amount) > 0);
-    
-    const collectionsToDelete = collectionSheet.value
-      .filter(row => row.memberId && row.id && (
-        !row.amount || 
-        isNaN(parseFloat(row.amount)) || 
-        parseFloat(row.amount) <= 0 || 
-        !row.installment
-      ));
+    // Use change tracking to identify what actually changed
+    const { toSave, toDelete, unchanged } = getChangedRows();
+
+    if (toSave.length === 0 && toDelete.length === 0) {
+      showErrorNotification('No changes detected. Please make changes to collections before submitting.');
+      return;
+    }
 
     let hasError = false;
 
     // First, handle deletions for rows that had data but now don't
-    for (const row of collectionsToDelete) {
+    for (const row of toDelete) {
       try {
-        // Delete existing collections for this member on this date
+        // Only delete collections for this specific member that we know existed
         const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
           collection.value.date,
           Number(collection.value.group_id)
         );
         const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
         
-        for (const old of memberOldCollections) {
-          try {
-            await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
-          } catch (deleteError) {
-            console.warn('Failed to delete old collection:', deleteError);
-          }
+        if (memberOldCollections.length > 0) {
+          await deleteSpecificCollections(memberOldCollections);
         }
       } catch (error: any) {
         hasError = true;
@@ -477,14 +555,8 @@ async function handleSubmit() {
       }
     }
 
-    // If there are no collections to save but we deleted some, that's still a success
-    if (collectionsToSave.length === 0 && collectionsToDelete.length === 0) {
-      showErrorNotification('Please enter at least one amount to save collections.');
-      return;
-    }
-
-    // Now handle saves/updates
-    for (const row of collectionsToSave) {
+    // Now handle saves/updates for only the changed rows
+    for (const row of toSave) {
       // The backend expects simple data: just the amount and starting installment
       // It will automatically distribute the payment across installments
       const installmentNumbers = row.installment.split(',').map(inst => {
@@ -504,25 +576,21 @@ async function handleSubmit() {
       };
 
       try {
+        // For updates, we need to handle existing data more carefully
         if (row.id) {
-          // For updates, delete ALL existing collections for this member and date first
+          // This row had existing data - delete only this member's collections for this date
           const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
             collection.value.date,
             Number(collection.value.group_id)
           );
           const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
           
-          // Delete all old collections for this member on this date
-          for (const old of memberOldCollections) {
-            try {
-              await collectionsStore.deleteCollection(old.id, Number(collection.value.group_id));
-            } catch (deleteError) {
-              console.warn('Failed to delete old collection:', deleteError);
-            }
+          // Delete existing collections for this member
+          if (memberOldCollections.length > 0) {
+            await deleteSpecificCollections(memberOldCollections);
+            // Wait a bit to ensure deletions complete
+            await new Promise(resolve => setTimeout(resolve, 300));
           }
-          
-          // Wait longer to ensure all deletions are complete
-          await new Promise(resolve => setTimeout(resolve, 500));
         }
         
         // Create the new collection - backend will handle installment distribution
@@ -543,68 +611,38 @@ async function handleSubmit() {
 
     if (!hasError) {
       let message = '';
-      if (collectionsToSave.length > 0 && collectionsToDelete.length > 0) {
-        message = `Collections saved successfully! ${collectionsToSave.length} saved, ${collectionsToDelete.length} deleted.`;
-      } else if (collectionsToSave.length > 0) {
-        message = `${collectionsToSave.length} collections saved successfully!`;
-      } else if (collectionsToDelete.length > 0) {
-        message = `${collectionsToDelete.length} collections deleted successfully!`;
+      if (toSave.length > 0 && toDelete.length > 0) {
+        message = `Collections updated successfully! ${toSave.length} saved, ${toDelete.length} deleted.`;
+      } else if (toSave.length > 0) {
+        message = `${toSave.length} collections saved successfully!`;
+      } else if (toDelete.length > 0) {
+        message = `${toDelete.length} collections deleted successfully!`;
       } else {
         message = 'Collections updated successfully!';
       }
       showSuccessNotification(message);
       
-      // After successful submission, fetch the collection data to show updated balances
-      await fetchSubmittedCollections();
+      // After successful submission, clear the collection sheet but keep date and group for easy navigation
+      // This allows users to quickly move to next date without losing context
+      collectionSheet.value = [];
+      originalCollectionSheet.value = [];
+      collectionBalances.value = [];
+      isAfterSubmission.value = false;
+      submittedCollections.value = [];
+      
+      // Keep the group selected but clear any error messages
+      errorMessage.value = '';
+      
+      // Show a helpful message about what to do next
+      setTimeout(() => {
+        showSuccessNotification('Collection saved! You can now select a different date or group to continue.');
+      }, 1500);
     } else {
       showErrorNotification('Some collections failed to save. Please check the notifications for details.');
     }
 
-    // Don't auto-redirect after submission so users can see the updated balances
-    // setTimeout(() => {
-    //   collection.value.date = '';
-    //   collection.value.group_id = '';
-    //   dateInput.value = '';
-    //   collectionSheet.value = [];
-    //   router.push('/collections/add');
-    // }, 1500);
   } catch (error: any) {
     showErrorNotification(error.response?.data?.message || error.message || 'Failed to create/update collections');
-  }
-}
-
-async function fetchSubmittedCollections() {
-  if (!collection.value.date || !collection.value.group_id) {
-    return;
-  }
-
-  try {
-    const submittedData = await collectionsStore.fetchCollectionsByDateAndGroup(
-      collection.value.date,
-      Number(collection.value.group_id)
-    );
-    submittedCollections.value = submittedData;
-    isAfterSubmission.value = true;
-    
-    // Update collection sheet with submitted collection data
-    collectionSheet.value = collectionSheet.value.map(row => {
-      const memberCollections = submittedData.filter((c: any) => c.member_id === row.memberId);
-      if (memberCollections.length > 0) {
-        const installmentString = memberCollections
-          .map((c: any) => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
-          .join(',');
-        const totalAmount = memberCollections.reduce((sum: number, c: any) => sum + c.collection_amount, 0);
-        
-        return {
-          ...row,
-          installment: installmentString,
-          amount: totalAmount.toString()
-        };
-      }
-      return row;
-    });
-  } catch (error) {
-    console.error('Failed to fetch submitted collections:', error);
   }
 }
 
@@ -651,6 +689,7 @@ watch([
   // Clear collection sheet immediately when group changes
   if (newGroupId !== oldGroupId) {
     collectionSheet.value = [];
+    originalCollectionSheet.value = [];
     collectionBalances.value = [];
     selectedGroup.value = null;
     errorMessage.value = '';
@@ -659,10 +698,8 @@ watch([
     return;
   }
   
-  // Clear collection sheet immediately when date changes (same as group change behavior)
+  // When date changes and we have both group and date, reload existing collections
   if (newDate !== oldDate) {
-    collectionSheet.value = [];
-    collectionBalances.value = [];
     errorMessage.value = '';
     isAfterSubmission.value = false;
     submittedCollections.value = [];
@@ -670,8 +707,23 @@ watch([
     // Update date display when date changes programmatically
     if (newDate) {
       dateInput.value = formatDateForDisplay(newDate);
+      
+      // If we have both group and date, reload the collection data
+      if (newGroupId && collectionSheet.value.length > 0) {
+        await loadExistingCollections();
+      }
     } else {
       dateInput.value = '';
+      // If date is cleared, reset to fresh state but keep the member data
+      if (collectionSheet.value.length > 0) {
+        collectionSheet.value = collectionSheet.value.map(row => ({
+          ...row,
+          amount: '',
+          installment: '',
+          id: undefined
+        }));
+        saveOriginalState();
+      }
     }
   }
 });
@@ -809,6 +861,26 @@ onMounted(() => {
         <p><strong>Selected Group:</strong> {{ selectedGroup?.name || 'Loading...' }}</p>
         <p><strong>Members in Collection Sheet:</strong> {{ collectionSheet.length }}</p>
         <p><strong>Total Members for Group:</strong> {{ groupMembers.length }}</p>
+        <p v-if="collection.date && collectionSheet.length === 0" class="next-action-hint">
+          <strong>💡 Tip:</strong> Collection sheet cleared after save. Click "Load Members" to start a new collection or use date navigation to move to another date.
+        </p>
+      </div>
+      
+      <!-- Show helpful message when collection is saved and sheet is cleared -->
+      <div v-if="collection.group_id && collection.date && collectionSheet.length === 0 && selectedGroup" class="saved-state-info">
+        <div class="saved-state-content">
+          <h4>✅ Ready for Next Collection</h4>
+          <p>Group: <strong>{{ selectedGroup.name }}</strong></p>
+          <p>Current Date: <strong>{{ formatDateForDisplay(collection.date) }}</strong></p>
+          <div class="next-steps">
+            <p><strong>What's next?</strong></p>
+            <ul>
+              <li>Use the date arrows (← →) to move to another date</li>
+              <li>Click "Load Members" to start a new collection for this date</li>
+              <li>Or select a different group to work with</li>
+            </ul>
+          </div>
+        </div>
       </div>
       
       <CollectionSheetTable
@@ -993,6 +1065,63 @@ input:focus, select:focus {
 
 .status-info p:last-child {
   margin-bottom: 0;
+}
+
+.next-action-hint {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 4px;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+  color: #856404;
+  font-size: 0.85rem;
+}
+
+.saved-state-info {
+  background: linear-gradient(135deg, #f8fff8 0%, #e8f5e8 100%);
+  border: 2px solid #4caf50;
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.1);
+}
+
+.saved-state-content h4 {
+  margin: 0 0 1rem 0;
+  color: #2e7d32;
+  font-size: 1.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.saved-state-content p {
+  margin: 0.5rem 0;
+  color: #2c3e50;
+  font-size: 0.95rem;
+}
+
+.next-steps {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #c8e6c9;
+}
+
+.next-steps p {
+  margin: 0 0 0.5rem 0;
+  font-weight: 600;
+  color: #2e7d32;
+}
+
+.next-steps ul {
+  margin: 0.5rem 0 0 0;
+  padding-left: 1.2rem;
+  color: #2c3e50;
+}
+
+.next-steps li {
+  margin: 0.3rem 0;
+  font-size: 0.9rem;
 }
 
 .collection-sheet {

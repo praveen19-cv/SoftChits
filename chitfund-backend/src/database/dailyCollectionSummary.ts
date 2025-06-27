@@ -62,7 +62,7 @@ export class DailyCollectionSummaryService {
         `).run();
       });
 
-      console.log(`Created daily collection summary table: ${tableName}`);
+      
     } catch (error) {
       console.error('Error creating daily collection summary table:', error);
       throw error;
@@ -139,7 +139,7 @@ export class DailyCollectionSummaryService {
         });
       }
 
-      console.log(`Updated daily summary for ${groupName} on ${collectionDate}: ₹${dailyStats.total_amount} from ${dailyStats.total_members_paid} members`);
+      
     } catch (error) {
       console.error('Error updating daily collection summary:', error);
       throw error;

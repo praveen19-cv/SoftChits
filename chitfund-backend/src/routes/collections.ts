@@ -173,7 +173,7 @@ router.get('/:groupId/balances', async (req, res) => {
 
     // Use existing balance table with proper case
     const balanceTableName = `collection_balance_${groupId}_${group.name.toUpperCase()}`;
-    console.log(`Using balance table: ${balanceTableName}`);
+    
 
     // Check if table exists
     const tableExists = await withRetry(() => 

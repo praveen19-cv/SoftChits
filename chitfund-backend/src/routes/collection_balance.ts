@@ -43,8 +43,7 @@ router.get('/:groupId', async (req, res) => {
 
     // Build table name
     const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
-    console.log(`Using balance table: ${balanceTableName}`);
-
+    
     // Check if table exists
     const tableExists = await withRetry(() =>
       db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(balanceTableName)
@@ -99,7 +98,7 @@ router.get('/:groupId/customer-sheet', async (req, res) => {
 
     // Build table name
     const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
-    console.log(`Using balance table: ${balanceTableName}`);
+  
 
     // Check if table exists
     const tableExists = await withRetry(() =>
@@ -154,7 +153,7 @@ router.get('/:groupId/pending-balance', async (req, res) => {
 
     // Build table name
     const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
-    console.log(`Using balance table: ${balanceTableName}`);
+   
 
     // Check if table exists
     const tableExists = await withRetry(() =>
@@ -353,7 +352,7 @@ router.get('/:groupId/incomplete', async (req, res) => {
 
     // Build table name
     const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
-    console.log(`Using balance table: ${balanceTableName}`);
+  
 
     // Check if table exists
     const tableExists = await withRetry(() =>
@@ -373,7 +372,7 @@ router.get('/:groupId/incomplete', async (req, res) => {
         ORDER BY cb.member_id, cb.installment_number ASC
       `).all(groupId)
     );
-    console.log('Incomplete balances query executed successfully.');
+    
     res.json(balances);
   } catch (error) {
     console.error('Error fetching incomplete collection balances:', error);

@@ -265,6 +265,26 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
+  async function fetchIncompleteCollectionBalances(groupId: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      // First ensure we have the group data
+      if (!groupsStore.groups.length) {
+        await groupsStore.fetchGroups();
+      }
+
+      const response = await api.get(`/collection-balance/${groupId}/incomplete`);
+      return response.data;
+    } catch (err: any) {
+      error.value = err.response?.data?.message || 'Failed to fetch incomplete collection balances';
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   // Export next month payout API call (creates installments and sets is_exported=1)
   async function exportNextMonthPayout(groupId: number, month: number, monthlySubscription: number) {
     try {
@@ -400,6 +420,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     deleteCollection,
     fetchCollectionsByGroup,
     fetchCollectionBalances,
+    fetchIncompleteCollectionBalances,
     exportNextMonthPayout,
     resetNextMonthPayout,
     getNextMonthStatus,

@@ -325,4 +325,48 @@ router.get('/:groupId/customer-sheet-enhanced', async (req, res) => {
   }
 });
 
+// GET /api/collection-balance/:groupId/incomplete
+router.get('/:groupId/incomplete', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const db = getReadDb();
+
+    // Get group details
+    const group: any = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId)
+    );
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Build table name
+    const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
+    console.log(`Using balance table: ${balanceTableName}`);
+
+    // Check if table exists
+    const tableExists = await withRetry(() =>
+      db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(balanceTableName)
+    );
+    if (!tableExists) {
+      return res.json([]);
+    }
+
+    // Query ONLY incomplete balances for this group with member names, sorted by installment number
+    const balances = await withRetry(() =>
+      db.prepare(`
+        SELECT cb.*, m.name as member_name
+        FROM ${balanceTableName} cb
+        LEFT JOIN members m ON cb.member_id = m.id
+        WHERE cb.group_id = ? AND cb.is_completed = 0 AND cb.remaining_balance > 0
+        ORDER BY cb.member_id, cb.installment_number ASC
+      `).all(groupId)
+    );
+    console.log('Incomplete balances query executed successfully.');
+    res.json(balances);
+  } catch (error) {
+    console.error('Error fetching incomplete collection balances:', error);
+    res.status(500).json({ error: 'Failed to fetch incomplete collection balances', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 export default router;

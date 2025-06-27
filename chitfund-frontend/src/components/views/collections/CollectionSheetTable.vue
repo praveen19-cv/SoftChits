@@ -1,12 +1,19 @@
 <script lang="ts" setup>
 import { defineProps, defineEmits } from 'vue'
 import type { CollectionSheetRow } from './CollectionSheetRow.ts'
+import type { CollectionBalance } from '@/stores/CollectionsStore'
+import InstallmentCalculator from './InstallmentCalculator.vue'
+import InstallmentBalanceDisplay from './InstallmentBalanceDisplay.vue'
 
 const props = defineProps<{
   collectionSheet: CollectionSheetRow[]
+  memberBalances: CollectionBalance[]
+  monthlySubscription: number
   onInstallmentChange: (row: CollectionSheetRow) => void
   onAmountChange: (row: CollectionSheetRow) => void
   isMonthlySubscriptionComplete: (row: CollectionSheetRow) => boolean
+  isAfterSubmission?: boolean
+  submittedCollections?: any[]
 }>()
 </script>
 
@@ -29,11 +36,15 @@ const props = defineProps<{
             <td>{{ row.serialNo }}</td>
             <td>{{ row.memberName }}</td>
             <td>
-              <input
-                type="text"
+              <InstallmentCalculator
+                :member-id="row.memberId"
+                :collection-amount="parseFloat(row.amount) || 0"
+                :member-balances="props.memberBalances"
+                :monthly-subscription="props.monthlySubscription"
+                :is-after-submission="props.isAfterSubmission"
+                :submitted-collections="props.submittedCollections"
                 v-model="row.installment"
-                @input="props.onInstallmentChange(row)"
-                placeholder="e.g., 1c,2,3c"
+                @installment-change="props.onInstallmentChange(row)"
               />
             </td>
             <td>
@@ -48,15 +59,15 @@ const props = defineProps<{
               />
             </td>
             <td>
-              <div v-if="Object.keys(row.installmentBalances).length === 0">-</div>
-              <div v-else v-for="(balance, instNo) in row.installmentBalances" :key="instNo" class="installment-balance">
-                <template v-if="typeof balance === 'object' && balance !== null && 'old' in balance && 'updated' in balance">
-                  Inst-{{ instNo }}: ₹{{ balance.old }} → ₹{{ balance.updated }}
-                </template>
-                <template v-else>
-                  Inst-{{ instNo }}: ₹{{ balance }}
-                </template>
-              </div>
+              <InstallmentBalanceDisplay
+                :member-id="row.memberId"
+                :installment-numbers="row.installment"
+                :collection-amount="parseFloat(row.amount) || 0"
+                :member-balances="props.memberBalances"
+                :monthly-subscription="props.monthlySubscription"
+                :is-after-submission="props.isAfterSubmission"
+                :submitted-collections="props.submittedCollections"
+              />
             </td>
           </tr>
         </tbody>

@@ -69,6 +69,10 @@ const errorMessage = ref('')
 const showPrompt = ref(false)
 const promptMessage = ref('')
 
+// New state for managing data sources
+const isAfterSubmission = ref(false)
+const submittedCollections = ref<any[]>([])
+
 // Notification state
 const showNotification = ref(false)
 const notificationMessage = ref('')
@@ -211,43 +215,89 @@ async function loadExistingCollections() {
   }
 
   try {
-    const existingCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
-      collection.value.date,
-      Number(collection.value.group_id)
-    ) as ExistingCollection[];
+    // Check if there are actual submitted collections for this date FIRST
+    let existingCollections: ExistingCollection[] = [];
+    try {
+      existingCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
+        collection.value.date,
+        Number(collection.value.group_id)
+      ) as ExistingCollection[];
+    } catch (collectionError) {
+      // No submitted collections found
+      existingCollections = [];
+    }
 
-    // Update collection sheet with existing data
-    collectionSheet.value = collectionSheet.value.map(row => {
-      const memberCollections = existingCollections.filter(c => c.member_id === row.memberId);
-      if (memberCollections.length > 0) {
-        const firstCollection = memberCollections[0];
-        const installmentString = memberCollections
-          .map(c => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
-          .join(',');
-        const totalAmount = memberCollections.reduce((sum: number, c: ExistingCollection) => sum + c.collection_amount, 0);
-        const installmentBalances: { [key: number]: number } = {};
-        const monthlySubscription = calculateMonthlySubscription();
+    if (existingCollections.length > 0) {
+      // AFTER SUBMISSION: Show actual collection data from collection table
+      isAfterSubmission.value = true;
+      submittedCollections.value = existingCollections;
+
+      // Update collection sheet with submitted collection data
+      collectionSheet.value = collectionSheet.value.map(row => {
+        const memberCollections = existingCollections.filter(c => c.member_id === row.memberId);
+        if (memberCollections.length > 0) {
+          // Show the actual submitted data
+          const firstCollection = memberCollections[0];
+          const installmentString = memberCollections
+            .map(c => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
+            .join(',');
+          const totalAmount = memberCollections.reduce((sum: number, c: ExistingCollection) => sum + c.collection_amount, 0);
+          
+          // For installment balances, show the actual remaining balance from collection table
+          const installmentBalances: { [key: number]: number } = {};
+          memberCollections.forEach((c: ExistingCollection) => {
+            // Show the remaining balance as it was when the collection was made
+            installmentBalances[c.installment_number] = c.remaining_balance;
+          });
+          
+          return {
+            ...row,
+            id: firstCollection.id,
+            installment: installmentString,
+            amount: totalAmount.toString(),
+            installmentBalances
+          };
+        }
+        return row;
+      });
+    } else {
+      // BEFORE SUBMISSION: Fetch incomplete balances from collection_balance table
+      // This shows only unpaid installments in ascending order
+      isAfterSubmission.value = false;
+      
+      const incompleteBalances = await collectionsStore.fetchIncompleteCollectionBalances(
+        Number(collection.value.group_id)
+      );
+
+      // Update collection sheet with incomplete balance data
+      collectionSheet.value = collectionSheet.value.map(row => {
+        const memberIncompleteBalances = incompleteBalances
+          .filter((b: any) => b.member_id === row.memberId)
+          .sort((a: any, b: any) => a.installment_number - b.installment_number);
         
-        memberCollections.forEach((c: ExistingCollection) => {
-          if (c.is_completed) {
-            installmentBalances[c.installment_number] = 0;
-          } else {
-            installmentBalances[c.installment_number] = monthlySubscription - c.collection_amount;
-          }
-        });
-        
-        return {
-          ...row,
-          id: firstCollection.id,
-          installment: installmentString,
-          amount: totalAmount.toString(),
-          installmentBalances
-        };
-      }
-      return row;
-    });
+        if (memberIncompleteBalances.length > 0) {
+          // Show incomplete installments data
+          const installmentBalances: { [key: number]: number } = {};
+          
+          memberIncompleteBalances.forEach((balance: any) => {
+            installmentBalances[balance.installment_number] = balance.remaining_balance;
+          });
+          
+          return {
+            ...row,
+            installmentBalances,
+            // Clear amount and installment to allow fresh input
+            amount: '',
+            installment: ''
+          };
+        }
+        return row;
+      });
+    }
+
   } catch (error) {
-    showErrorNotification('Failed to load existing collections');
+    console.error('Error loading collection data:', error);
+    showErrorNotification('Failed to load collection data');
   }
 }
 
@@ -267,6 +317,10 @@ async function handleGroupChange() {
   // Clear the collection sheet immediately when group changes
   collectionSheet.value = [];
   collectionBalances.value = [];
+  
+  // Reset submission state
+  isAfterSubmission.value = false;
+  submittedCollections.value = [];
   
   const group = groups.value.find(g => g.id === Number(collection.value.group_id))
   if (group) {
@@ -315,8 +369,8 @@ async function loadGroupMembers() {
     }))
 
     try {
-      // Load collection balances for this group
-      collectionBalances.value = await collectionsStore.fetchCollectionBalances(Number(collection.value.group_id))
+      // Load incomplete collection balances for this group (for installment calculation)
+      collectionBalances.value = await collectionsStore.fetchIncompleteCollectionBalances(Number(collection.value.group_id))
     } catch (error) {
       showErrorNotification('Failed to load collection balances')
     }
@@ -343,38 +397,6 @@ function getTotalPaidForMember(memberId: number): number {
     .reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0)
 }
 
-function handleInstallmentChange(row: CollectionSheetRow) {
-  if (!row.installment || !selectedGroup.value) return
-
-  const monthlySubscription = calculateMonthlySubscription();
-  const amount = parseFloat(row.amount) || 0;
-
-  const installments = row.installment.split(',').map(inst => {
-    const isCompleted = inst.endsWith('c');
-    const number = parseInt(inst.replace('c', ''));
-    return { number, isCompleted };
-  });
-
-  installments.sort((a, b) => a.number - b.number);
-
-  row.installmentBalances = {};
-  let remainingAmount = amount;
-
-  for (const inst of installments) {
-    if (inst.isCompleted) {
-      row.installmentBalances[inst.number] = 0;
-    } else {
-      if (remainingAmount >= monthlySubscription) {
-        row.installmentBalances[inst.number] = 0;
-        remainingAmount -= monthlySubscription;
-      } else {
-        row.installmentBalances[inst.number] = monthlySubscription - remainingAmount;
-        remainingAmount = 0;
-      }
-    }
-  }
-}
-
 function isMonthlySubscriptionComplete(row: CollectionSheetRow): boolean {
   if (!selectedGroup.value || !row.amount) return false;
   const monthlySubscription = calculateMonthlySubscription();
@@ -390,110 +412,24 @@ function isMonthlySubscriptionComplete(row: CollectionSheetRow): boolean {
 }
 
 async function handleAmountChange(row: CollectionSheetRow) {
+  // The InstallmentCalculator component will handle the installment calculation automatically
+  // This function is kept for backward compatibility and any additional processing needed
   if (!row.amount || !selectedGroup.value) return;
-
+  
+  // Any additional validation or processing can be added here
   const amount = parseFloat(row.amount);
-  const monthlySubscription = calculateMonthlySubscription();
-
-  // Get the member's current balances to determine which installments can be paid
-  const memberBalances = collectionBalances.value
-    .filter(b => b.member_id === row.memberId)
-    .sort((a, b) => a.installment_number - b.installment_number);
-
-  if (memberBalances.length === 0) {
-    // If no balances exist, assume starting from installment 1
-    const numInstallments = Math.floor(amount / monthlySubscription);
-    const remainder = amount % monthlySubscription;
-    
-    const installments = [];
-    for (let i = 1; i <= numInstallments; i++) {
-      installments.push(`${i}c`);
-    }
-    if (remainder > 0) {
-      installments.push(`${numInstallments + 1}`);
-    }
-    
-    row.installment = installments.join(',');
-  } else {
-    // Use existing balances to calculate which installments will be affected
-    let remainingAmount = amount;
-    const installments = [];
-    const installmentBalances: { [key: number]: number } = {};
-
-    for (const balance of memberBalances) {
-      if (remainingAmount <= 0) break;
-      
-      if (balance.remaining_balance > 0) {
-        const payAmount = Math.min(remainingAmount, balance.remaining_balance);
-        const newBalance = balance.remaining_balance - payAmount;
-        
-        if (newBalance <= 0) {
-          installments.push(`${balance.installment_number}c`);
-          installmentBalances[balance.installment_number] = 0;
-        } else {
-          installments.push(`${balance.installment_number}`);
-          installmentBalances[balance.installment_number] = newBalance;
-        }
-        
-        remainingAmount -= payAmount;
-      }
-    }
-    
-    row.installment = installments.join(',');
-    row.installmentBalances = installmentBalances;
+  if (isNaN(amount) || amount < 0) {
+    row.amount = '';
+    return;
   }
-
-  calculateUpdatedInstallmentBalances(row);
 }
 
-function getCurrentAndPreviousInstallments(memberBalances: CollectionBalance[]): number[] {
-  if (!memberBalances.length) return [];
-  const currentIdx = memberBalances.findIndex(b => b.remaining_balance > 0);
-  if (currentIdx === -1) {
-    return [memberBalances.length - 2, memberBalances.length - 1].filter(i => i >= 0).map(i => memberBalances[i].installment_number);
-  }
-  const prevIdx = currentIdx - 1;
-  const result = [memberBalances[currentIdx].installment_number];
-  if (prevIdx >= 0) result.unshift(memberBalances[prevIdx].installment_number);
-  return result;
-}
-
-function calculateUpdatedInstallmentBalances(row: CollectionSheetRow) {
-  const memberBalances = collectionBalances.value
-    .filter(b => b.member_id === row.memberId)
-    .sort((a, b) => a.installment_number - b.installment_number);
-  let amount = parseFloat(row.amount) || 0;
-  const updatedBalances: { [key: number]: { old: number, updated: number } } = {};
-
-  let installmentsToShow: number[] = [];
-  if (row.installment) {
-    const entered = row.installment.split(',').map(inst => parseInt(inst)).filter(n => !isNaN(n));
-    if (entered.length > 0) {
-      const prev = Math.max(1, Math.min(...entered) - 1);
-      if (!entered.includes(prev) && prev > 0) entered.unshift(prev);
-      installmentsToShow = entered;
-    }
-  }
-  if (!installmentsToShow.length) {
-    installmentsToShow = getCurrentAndPreviousInstallments(memberBalances);
-  }
-
-  for (const bal of memberBalances) {
-    if (!installmentsToShow.includes(bal.installment_number)) continue;
-    const oldBal = bal.remaining_balance;
-    let updatedBal = oldBal;
-    if (amount > 0) {
-      if (amount >= oldBal) {
-        updatedBal = 0;
-        amount -= oldBal;
-      } else {
-        updatedBal = oldBal - amount;
-        amount = 0;
-      }
-    }
-    updatedBalances[bal.installment_number] = { old: oldBal, updated: updatedBal };
-  }
-  row.installmentBalances = updatedBalances;
+function handleInstallmentChange(row: CollectionSheetRow) {
+  // Basic validation for installment format
+  if (!row.installment) return;
+  
+  // The InstallmentBalanceDisplay component will handle the balance calculation
+  // Any additional validation can be added here
 }
 
 async function handleSubmit() {
@@ -617,19 +553,58 @@ async function handleSubmit() {
         message = 'Collections updated successfully!';
       }
       showSuccessNotification(message);
+      
+      // After successful submission, fetch the collection data to show updated balances
+      await fetchSubmittedCollections();
     } else {
       showErrorNotification('Some collections failed to save. Please check the notifications for details.');
     }
 
-    setTimeout(() => {
-      collection.value.date = '';
-      collection.value.group_id = '';
-      dateInput.value = '';
-      collectionSheet.value = [];
-      router.push('/collections/add');
-    }, 1500);
+    // Don't auto-redirect after submission so users can see the updated balances
+    // setTimeout(() => {
+    //   collection.value.date = '';
+    //   collection.value.group_id = '';
+    //   dateInput.value = '';
+    //   collectionSheet.value = [];
+    //   router.push('/collections/add');
+    // }, 1500);
   } catch (error: any) {
     showErrorNotification(error.response?.data?.message || error.message || 'Failed to create/update collections');
+  }
+}
+
+async function fetchSubmittedCollections() {
+  if (!collection.value.date || !collection.value.group_id) {
+    return;
+  }
+
+  try {
+    const submittedData = await collectionsStore.fetchCollectionsByDateAndGroup(
+      collection.value.date,
+      Number(collection.value.group_id)
+    );
+    submittedCollections.value = submittedData;
+    isAfterSubmission.value = true;
+    
+    // Update collection sheet with submitted collection data
+    collectionSheet.value = collectionSheet.value.map(row => {
+      const memberCollections = submittedData.filter((c: any) => c.member_id === row.memberId);
+      if (memberCollections.length > 0) {
+        const installmentString = memberCollections
+          .map((c: any) => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
+          .join(',');
+        const totalAmount = memberCollections.reduce((sum: number, c: any) => sum + c.collection_amount, 0);
+        
+        return {
+          ...row,
+          installment: installmentString,
+          amount: totalAmount.toString()
+        };
+      }
+      return row;
+    });
+  } catch (error) {
+    console.error('Failed to fetch submitted collections:', error);
   }
 }
 
@@ -679,6 +654,8 @@ watch([
     collectionBalances.value = [];
     selectedGroup.value = null;
     errorMessage.value = '';
+    isAfterSubmission.value = false;
+    submittedCollections.value = [];
     return;
   }
   
@@ -687,6 +664,8 @@ watch([
     collectionSheet.value = [];
     collectionBalances.value = [];
     errorMessage.value = '';
+    isAfterSubmission.value = false;
+    submittedCollections.value = [];
     
     // Update date display when date changes programmatically
     if (newDate) {
@@ -835,9 +814,13 @@ onMounted(() => {
       <CollectionSheetTable
         v-if="collectionSheet && collectionSheet.length > 0"
         :collectionSheet="collectionSheet"
+        :memberBalances="collectionBalances"
+        :monthlySubscription="calculateMonthlySubscription()"
         :onInstallmentChange="handleInstallmentChange"
         :onAmountChange="handleAmountChange"
         :isMonthlySubscriptionComplete="isMonthlySubscriptionComplete"
+        :isAfterSubmission="isAfterSubmission"
+        :submittedCollections="submittedCollections"
       />
       <div v-if="collectionSheet && collectionSheet.length > 0" class="total-collected-amount">
         <b>Total Collected Amount:</b> ₹{{ totalCollectedAmount.toLocaleString() }}

@@ -407,6 +407,23 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
+  async function fetchCollectionBalancesForCustomer(customerId: number, groupId: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      const response = await api.get(`/collection-balance/${groupId}`, {
+        params: { customerId }
+      })
+      return response.data // Array of collection balances for the customer
+    } catch (error) {
+      console.error('Error fetching collection balances for customer:', error);
+      throw error
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     collections,
     collectionBalances,
@@ -428,6 +445,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     fetchCollectionsByCustomerAndDateRange,
     fetchCollectionsByTableNameAndDate,
     fetchPendingInstallmentsForCustomer,
+    fetchCollectionBalancesForCustomer,
     setMonthlySubscriptionExportStatus
   };
 });

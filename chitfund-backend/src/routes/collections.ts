@@ -1015,8 +1015,7 @@ router.get('/:groupId/customer-sheet', async (req, res) => {
     // Fetch collections for the customer in the date range
     const collections = await withRetry(() =>
       db.prepare(`
-        SELECT c.*, m.name as member_name,
-               c.remaining_balance as updated_remaining_balance
+        SELECT c.*, m.name as member_name
         FROM ${collectionsTableName} c
         JOIN members m ON c.member_id = m.id
         WHERE c.group_id = ? AND c.member_id = ?

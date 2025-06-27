@@ -54,14 +54,26 @@ router.get('/:groupId', async (req, res) => {
     }
 
     // Query all balances for this group with member names
+    // Support optional customerId filtering
+    const customerId = req.query.customerId ? Number(req.query.customerId) : null;
+    
+    let query = `
+      SELECT cb.*, m.name as member_name
+      FROM ${balanceTableName} cb
+      LEFT JOIN members m ON cb.member_id = m.id
+      WHERE cb.group_id = ?
+    `;
+    let params = [groupId];
+    
+    if (customerId) {
+      query += ` AND cb.member_id = ?`;
+      params.push(customerId);
+    }
+    
+    query += ` ORDER BY cb.member_id, cb.installment_number`;
+    
     const balances = await withRetry(() =>
-      db.prepare(`
-        SELECT cb.*, m.name as member_name
-        FROM ${balanceTableName} cb
-        LEFT JOIN members m ON cb.member_id = m.id
-        WHERE cb.group_id = ?
-        ORDER BY cb.member_id, cb.installment_number
-      `).all(groupId)
+      db.prepare(query).all(...params)
     );
     console.log('Balances query executed successfully.');
     res.json(balances);

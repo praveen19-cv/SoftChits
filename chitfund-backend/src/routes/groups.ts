@@ -12,6 +12,7 @@ interface Group {
   status: string;
   number_of_months: number;
   commission_percentage?: number; // Added commission_percentage
+  is_ten_dates_chit?: boolean; // Added is_ten_dates_chit
   created_at?: string;
   updated_at?: string;
 }
@@ -51,6 +52,96 @@ async function executeTransaction<T>(db: any, operation: () => T): Promise<T> {
   }
 }
 
+// Helper function to generate initial chit dates for a new group
+async function generateInitialChitDates(group: Group): Promise<void> {
+  const db = dbPool.getWriteConnection();
+  
+  try {
+    const dates: { chit_date: string; amount: number }[] = [];
+    
+    if (group.is_ten_dates_chit) {
+      // For ten dates chit: 10th, 20th, 30th of each month
+      const startParts = group.start_date.split('-');
+      const endParts = group.end_date.split('-');
+      
+      let startYear = parseInt(startParts[0]);
+      let startMonth = parseInt(startParts[1]);
+      let endYear = parseInt(endParts[0]);
+      let endMonth = parseInt(endParts[1]);
+      
+      // Generate dates from start month/year to end month/year
+      for (let year = startYear; year <= endYear; year++) {
+        let monthStart = (year === startYear) ? startMonth : 1;
+        let monthEnd = (year === endYear) ? endMonth : 12;
+        
+        for (let month = monthStart; month <= monthEnd; month++) {
+          // Add 10th, 20th, 30th of each month
+          [10, 20, 30].forEach(day => {
+            const monthStr = month.toString().padStart(2, '0');
+            const dayStr = day.toString().padStart(2, '0');
+            const dateString = `${year}-${monthStr}-${dayStr}`;
+            
+            // Skip February 30th manually
+            if (month === 2 && day === 30) return;
+            
+            // Check if within range by string comparison
+            if (dateString >= group.start_date && dateString <= group.end_date) {
+              dates.push({ chit_date: dateString, amount: 0 });
+            }
+          });
+        }
+      }
+    } else {
+      // For normal chit: monthly
+      const startDate = new Date(group.start_date);
+      const endDate = new Date(group.end_date);
+      let currentDate = new Date(startDate);
+      
+      while (currentDate <= endDate) {
+        const dateString = currentDate.toISOString().split('T')[0];
+        dates.push({ chit_date: dateString, amount: 0 });
+        currentDate.setMonth(currentDate.getMonth() + 1);
+      }
+    }
+    
+    // Calculate minimum amounts
+    const numDates = dates.length;
+    const totalAmount = group.total_amount;
+    
+    if (group.is_ten_dates_chit) {
+      // For ten dates chit: start from 4% at last row, increase by 0.34% per row
+      for (let i = 0; i < numDates; i++) {
+        const percentage = 4 + (numDates - 1 - i) * 0.34;
+        dates[i].amount = Math.round((totalAmount * percentage) / 100);
+      }
+    } else {
+      // For normal chit: start from 4% at last row, increase by 1% per row
+      for (let i = 0; i < numDates; i++) {
+        const percentage = 4 + (numDates - 1 - i) * 1;
+        dates[i].amount = Math.round((totalAmount * percentage) / 100);
+      }
+    }
+    
+    // Get the dynamic table name for chit dates
+    const chitDatesTableName = GroupTableService.getTableName(group.id, group.name, 'chit_dates');
+    
+    // Insert chit dates
+    for (const chitDate of dates) {
+      await withRetry(() => 
+        db.prepare(`
+          INSERT INTO ${chitDatesTableName} (group_id, chit_date, amount, created_at)
+          VALUES (?, ?, ?, ?)
+        `).run(group.id, chitDate.chit_date, chitDate.amount, new Date().toISOString())
+      );
+    }
+    
+    console.log(`Generated ${dates.length} initial chit dates for group ${group.id}`);
+  } catch (error) {
+    console.error('Error generating initial chit dates:', error);
+    throw error;
+  }
+}
+
 // Get all groups
 router.get('/', async (req, res) => {
   const db = dbPool.getReadConnection();
@@ -58,7 +149,12 @@ router.get('/', async (req, res) => {
     const groups = await withRetry(() => 
       db.prepare('SELECT * FROM groups').all() as Group[]
     );
-    res.json(groups);
+    // Convert is_ten_dates_chit from number to boolean
+    const processedGroups = groups.map(group => ({
+      ...group,
+      is_ten_dates_chit: Boolean(group.is_ten_dates_chit)
+    }));
+    res.json(processedGroups);
   } catch (error) {
     console.error('Error fetching groups:', error);
     res.status(500).json({ error: 'Failed to fetch groups' });
@@ -75,7 +171,12 @@ router.get('/:id', async (req, res) => {
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
-    res.json(group);
+    // Convert is_ten_dates_chit from number to boolean
+    const processedGroup = {
+      ...group,
+      is_ten_dates_chit: Boolean(group.is_ten_dates_chit)
+    };
+    res.json(processedGroup);
   } catch (error) {
     console.error('Error fetching group:', error);
     res.status(500).json({ error: 'Failed to fetch group' });
@@ -86,13 +187,13 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const db = dbPool.getWriteConnection();
   try {
-    const { name, total_amount, member_count, start_date, end_date, number_of_months } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage, is_ten_dates_chit } = req.body;
     
     const result = await withRetry(() => 
       db.prepare(`
-        INSERT INTO groups (name, total_amount, member_count, start_date, end_date, number_of_months)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(name, total_amount, member_count, start_date, end_date, number_of_months)
+        INSERT INTO groups (name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage, is_ten_dates_chit)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage || 0, is_ten_dates_chit ? 1 : 0)
     );
 
     const newGroup = await withRetry(() => 
@@ -102,7 +203,16 @@ router.post('/', async (req, res) => {
     // Create dynamic tables for the new group
     await GroupTableService.createGroupTables(newGroup.id, newGroup.name);
     
-    res.status(201).json(newGroup);
+    // Generate initial chit dates for the new group
+    await generateInitialChitDates(newGroup);
+    
+    // Convert is_ten_dates_chit from number to boolean before sending response
+    const processedGroup = {
+      ...newGroup,
+      is_ten_dates_chit: Boolean(newGroup.is_ten_dates_chit)
+    };
+    
+    res.status(201).json(processedGroup);
   } catch (error) {
     console.error('Error creating group:', error);
     res.status(500).json({ error: 'Failed to create group' });
@@ -113,14 +223,14 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   const db = dbPool.getWriteConnection();
   try {
-    const { name, total_amount, member_count, start_date, end_date } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, commission_percentage, is_ten_dates_chit } = req.body;
     
     const result = await withRetry(() => 
       db.prepare(`
         UPDATE groups
-        SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?
+        SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, commission_percentage = ?, is_ten_dates_chit = ?
         WHERE id = ?
-      `).run(name, total_amount, member_count, start_date, end_date, req.params.id)
+      `).run(name, total_amount, member_count, start_date, end_date, commission_percentage || 0, is_ten_dates_chit ? 1 : 0, req.params.id)
     );
 
     if (result.changes === 0) {
@@ -128,9 +238,16 @@ router.put('/:id', async (req, res) => {
     }
 
     const updatedGroup = await withRetry(() => 
-      db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id)
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id) as Group
     );
-    res.json(updatedGroup);
+    
+    // Convert is_ten_dates_chit from number to boolean
+    const processedGroup = {
+      ...updatedGroup,
+      is_ten_dates_chit: Boolean(updatedGroup.is_ten_dates_chit)
+    };
+    
+    res.json(processedGroup);
   } catch (error) {
     console.error('Error updating group:', error);
     res.status(500).json({ error: 'Failed to update group' });
@@ -557,6 +674,49 @@ router.post('/:id/create-tables', async (req, res) => {
   } catch (error) {
     console.error('Error creating tables for group:', error);
     res.status(500).json({ error: 'Failed to create tables for group' });
+  }
+});
+
+// Endpoint to regenerate chit dates for an existing group (admin function)
+router.post('/:id/regenerate-chit-dates', async (req, res) => {
+  const db = dbPool.getWriteConnection();
+  try {
+    const id = Number(req.params.id);
+    
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(id) as Group | undefined
+    );
+    
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    
+    // Get the dynamic table name for chit dates
+    const chitDatesTableName = GroupTableService.getTableName(id, group.name, 'chit_dates');
+    
+    // Delete existing chit dates
+    await withRetry(() => 
+      db.prepare(`DELETE FROM ${chitDatesTableName} WHERE group_id = ?`).run(id)
+    );
+    
+    // Generate new chit dates
+    await generateInitialChitDates(group);
+    
+    // Fetch and return the updated chit dates
+    const updatedChitDates = await withRetry(() => 
+      db.prepare(`
+        SELECT * FROM ${chitDatesTableName} WHERE group_id = ? ORDER BY chit_date
+      `).all(id)
+    );
+    
+    res.json({
+      message: 'Chit dates regenerated successfully',
+      count: updatedChitDates.length,
+      dates: updatedChitDates
+    });
+  } catch (error) {
+    console.error('Error regenerating chit dates:', error);
+    res.status(500).json({ error: 'Failed to regenerate chit dates' });
   }
 });
 

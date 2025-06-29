@@ -55,6 +55,7 @@ onMounted(() => {
         :startDate="store.currentGroup.start_date"
         :endDate="store.currentGroup.end_date"
         :numberOfMonths="store.currentGroup.number_of_months"
+        :isTenDatesChit="store.currentGroup.is_ten_dates_chit"
       />
       <MonthlySubscriptionTab v-if="activeTab === 'subscription'" :groupId="Number(groupId)" />
       <OtherTab v-if="activeTab === 'other'" :groupId="Number(groupId)" />

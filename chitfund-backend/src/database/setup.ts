@@ -69,6 +69,7 @@ export async function initializeDatabase() {
         end_date TEXT NOT NULL,
         number_of_months INTEGER NOT NULL DEFAULT 0,
         commission_percentage REAL DEFAULT 0,
+        is_ten_dates_chit INTEGER DEFAULT 0, -- 0 for false, 1 for true
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
@@ -115,9 +116,30 @@ export async function initializeDatabase() {
     `).run();
 
     console.log('Database initialized successfully');
+    
+    // Run migrations
+    migrateAddTenDatesChitColumn(db);
+    
   } catch (error) {
     console.error('Error initializing database:', error);
     throw error;
+  }
+}
+
+// Add migration for is_ten_dates_chit column
+function migrateAddTenDatesChitColumn(db: Database.Database) {
+  try {
+    // Check if column exists
+    const tableInfo = db.prepare("PRAGMA table_info(groups)").all() as any[];
+    const hasColumn = tableInfo.some((col: any) => col.name === 'is_ten_dates_chit');
+    
+    if (!hasColumn) {
+      console.log('Adding is_ten_dates_chit column to groups table...');
+      db.prepare('ALTER TABLE groups ADD COLUMN is_ten_dates_chit INTEGER DEFAULT 0').run();
+      console.log('Successfully added is_ten_dates_chit column.');
+    }
+  } catch (error) {
+    console.error('Error adding is_ten_dates_chit column:', error);
   }
 }
 

@@ -1,6 +1,6 @@
 <template>
   <div class="chit-dates-table">
-    <h4>Chit Date Settings</h4>
+    <h4>{{ isTenDatesChit ? 'Chit Date Settings (10th, 20th, 30th of each month)' : 'Chit Date Settings (Monthly)' }}</h4>
     <div v-if="store.loading" class="loading">
       Loading...
     </div>
@@ -70,7 +70,7 @@
 
 <script lang="ts" setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { format as formatDateFns, addMonths, parseISO, isAfter, isValid as isDateValid } from 'date-fns'
+import { format as formatDateFns, addMonths, addDays, parseISO, isAfter, isValid as isDateValid } from 'date-fns'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
 
@@ -79,6 +79,7 @@ const props = defineProps<{
   startDate: string
   endDate: string
   numberOfMonths: number
+  isTenDatesChit?: boolean
 }>()
 
 const store = useGroupsStore()
@@ -87,29 +88,121 @@ const originalChitDates = ref<{ chit_date: string; amount: number }[]>([])
 const hasChanges = ref(false)
 const notification = ref({ show: false, message: '', type: 'success' })
 
-function generateChitDates() {
-  const dates: { chit_date: string; amount: number }[] = []
-  let currentDate = parseISO(props.startDate)
-  const endDate = parseISO(props.endDate)
-  while (!isAfter(currentDate, endDate)) {
-    dates.push({ chit_date: formatDateFns(currentDate, 'yyyy-MM-dd'), amount: 0 })
-    currentDate = addMonths(currentDate, 1)
+async function generateChitDates(props: { startDate: string; endDate: string; isTenDatesChit?: boolean }) {
+  const dates: { chit_date: string; amount: number }[] = [];
+  
+  if (props.isTenDatesChit) {
+    // Ultra-simple approach - just generate the dates without any Date object validation
+    const startParts = props.startDate.split('-');
+    const endParts = props.endDate.split('-');
+    
+    let startYear = parseInt(startParts[0]);
+    let startMonth = parseInt(startParts[1]);
+    let endYear = parseInt(endParts[0]);
+    let endMonth = parseInt(endParts[1]);
+    
+    // Generate dates from start month/year to end month/year
+    for (let year = startYear; year <= endYear; year++) {
+      let monthStart = (year === startYear) ? startMonth : 1;
+      let monthEnd = (year === endYear) ? endMonth : 12;
+      
+      for (let month = monthStart; month <= monthEnd; month++) {
+        // Add 10th, 20th, 30th of each month - NO VALIDATION
+        [10, 20, 30].forEach(day => {
+          const monthStr = month.toString().padStart(2, '0');
+          const dayStr = day.toString().padStart(2, '0');
+          const dateString = `${year}-${monthStr}-${dayStr}`;
+          
+          // Skip February 30th manually
+          if (month === 2 && day === 30) return;
+          
+          // Check if within range by string comparison only
+          if (dateString >= props.startDate && dateString <= props.endDate) {
+            dates.push({ chit_date: dateString, amount: 0 });
+          }
+        });
+      }
+    }
+  } else {
+    // For normal chit: monthly
+    const startDate = parseISO(props.startDate);
+    const endDate = parseISO(props.endDate);
+    let currentDate = startDate;
+    
+    while (!isAfter(currentDate, endDate)) {
+      dates.push({ chit_date: formatDateFns(currentDate, 'yyyy-MM-dd'), amount: 0 });
+      currentDate = addMonths(currentDate, 1);
+    }
   }
-  return dates
+
+  // Calculate minimum amounts dynamically
+  await calculateMinimumAmounts(dates);
+
+  // Debug: Log the generated dates to see what we actually created
+  console.log('Generated chit dates for legacy group:', dates.length, 'dates');
+
+  return dates;
+}
+
+async function calculateMinimumAmounts(dates: { chit_date: string; amount: number }[]) {
+  try {
+    // Fetch group details to get total amount
+    await store.fetchGroupById(Number(props.groupId));
+    const group = store.currentGroup;
+    
+    if (!group || !group.total_amount) {
+      console.warn('Cannot calculate minimum amounts: group or total_amount not found');
+      return; // Can't calculate without total amount
+    }
+    
+    const totalAmount = group.total_amount;
+    const numDates = dates.length;
+    
+    if (props.isTenDatesChit) {
+      // For ten dates chit: start from 4% at last row, increase by 0.34% per row
+      for (let i = 0; i < numDates; i++) {
+        const percentage = 4 + (numDates - 1 - i) * 0.34;
+        dates[i].amount = Math.round((totalAmount * percentage) / 100);
+      }
+    } else {
+      // For normal chit: start from 4% at last row, increase by 1% per row
+      for (let i = 0; i < numDates; i++) {
+        const percentage = 4 + (numDates - 1 - i) * 1;
+        dates[i].amount = Math.round((totalAmount * percentage) / 100);
+      }
+    }
+  } catch (error) {
+    console.error('Error calculating minimum amounts:', error);
+    // If calculation fails, set all amounts to 0
+    dates.forEach(date => date.amount = 0);
+  }
 }
 
 async function loadChitDates() {
   try {
     const data = await store.fetchChitDates(Number(props.groupId))
+    
     if (Array.isArray(data) && data.length) {
+      console.log('Loading existing chit dates from database');
       chitDates.value = data.map(d => ({ chit_date: d.chit_date, amount: Number(d.amount) || 0 }))
     } else {
-      chitDates.value = generateChitDates()
+      console.log('No existing chit dates found, generating for legacy group');
+      // Generate new chit dates with calculated minimum amounts (for legacy groups only)
+      chitDates.value = await generateChitDates({
+        startDate: props.startDate,
+        endDate: props.endDate,
+        isTenDatesChit: props.isTenDatesChit
+      })
     }
     originalChitDates.value = JSON.parse(JSON.stringify(chitDates.value))
     hasChanges.value = false
-  } catch {
-    chitDates.value = generateChitDates()
+  } catch (error) {
+    console.log('Error fetching chit dates, generating new ones:', error);
+    chitDates.value = await generateChitDates({
+      startDate: props.startDate,
+      endDate: props.endDate,
+      isTenDatesChit: props.isTenDatesChit
+    })
     originalChitDates.value = JSON.parse(JSON.stringify(chitDates.value))
     hasChanges.value = false
   }
@@ -124,7 +217,10 @@ async function saveChitDates() {
     const datesToSave = chitDates.value.map(d => {
       const parsed = parseISO(d.chit_date)
       if (!isDateValid(parsed)) throw new Error(`Invalid date: ${d.chit_date}`)
-      return { chit_date: formatDateFns(parsed, 'yyyy-MM-dd'), amount: Number(d.amount) || 0 }
+      
+      const formattedDate = formatDateFns(parsed, 'yyyy-MM-dd');
+      
+      return { chit_date: formattedDate, amount: Number(d.amount) || 0 }
     })
     datesToSave.sort((a, b) => parseISO(a.chit_date).getTime() - parseISO(b.chit_date).getTime())
     await store.updateChitDates(Number(props.groupId), datesToSave)
@@ -189,7 +285,10 @@ async function exportAsBidAmounts() {
     });
     
     await store.updateMonthlySubscriptions(Number(props.groupId), updated);
-    showNotification('Bid amounts exported to monthly subscriptions with calculated dividends');
+    const message = props.isTenDatesChit 
+      ? 'Bid amounts exported to subscriptions (10th, 20th, 30th intervals) with calculated dividends'
+      : 'Bid amounts exported to monthly subscriptions with calculated dividends';
+    showNotification(message);
   } catch (error) {
     const errMsg = (error && typeof error === 'object' && 'message' in error) ? (error as any).message : 'Failed to export bid amounts';
     showNotification(errMsg, 'error');
@@ -235,6 +334,13 @@ function isValidAmount(amount: number): boolean {
 
 watch(() => props.startDate, loadChitDates)
 watch(() => props.endDate, loadChitDates)
+watch(() => props.isTenDatesChit, async () => {
+  if (chitDates.value.length > 0) {
+    await calculateMinimumAmounts(chitDates.value)
+    // Mark as changed so user can save manually
+    hasChanges.value = true
+  }
+})
 onMounted(loadChitDates)
 </script>
 

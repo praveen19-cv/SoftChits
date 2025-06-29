@@ -22,6 +22,7 @@ export interface Group {
   created_at?: string;
   updated_at?: string;
   commission_percentage: number;
+  is_ten_dates_chit?: boolean;
 }
 
 export interface CreateGroup {
@@ -33,6 +34,7 @@ export interface CreateGroup {
   status: string;
   number_of_months: number;
   commission_percentage: number;
+  is_ten_dates_chit?: boolean;
 }
 
 interface ChitDate {

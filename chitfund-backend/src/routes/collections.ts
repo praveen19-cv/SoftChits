@@ -747,7 +747,7 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
       return res.status(404).json({ error: 'Group not found' });
     }
 
-    console.log(`Found group: ${group.name}`);
+ 
 
     // Get the dynamic table names
     const monthlySubscriptionTable = GroupTableService.getTableName(Number(groupId), group.name, 'monthly_subscription');
@@ -946,7 +946,7 @@ router.post('/group/:groupId/reset-next-month', async (req, res) => {
         `).run(groupId, month)
       );
       
-      console.log(`Deleted ${deleteBalanceResult.changes} collection balance entries`);
+      
 
       // 4. Verify the updates
       const msVerifyResult = await withRetry(() => 

@@ -63,9 +63,9 @@ const filteredMembers = computed(() => {
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
     filtered = filtered.filter(member => 
-      member.name.toLowerCase().includes(query) ||
-      member.phone.includes(query) ||
-      member.email.toLowerCase().includes(query)
+      (member.name && member.name.toLowerCase().includes(query)) ||
+      (member.phone && member.phone.includes(query)) ||
+      (member.email && member.email.toLowerCase().includes(query))
     )
   }
 

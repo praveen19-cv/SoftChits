@@ -42,9 +42,9 @@ async function withRetry<T>(operation: () => T, maxRetries = 5): Promise<T> {
 // Helper function to execute transactions with retry
 async function executeTransaction<T>(db: any, operation: () => T): Promise<T> {
   try {
-    console.log('Starting transaction...');
+    
     const result = await withRetry(() => db.transaction(operation)());
-    console.log('Transaction completed successfully.');
+    
     return result;
   } catch (error) {
     console.error('Transaction failed:', error);
@@ -135,7 +135,6 @@ async function generateInitialChitDates(group: Group): Promise<void> {
       );
     }
     
-    console.log(`Generated ${dates.length} initial chit dates for group ${group.id}`);
   } catch (error) {
     console.error('Error generating initial chit dates:', error);
     throw error;

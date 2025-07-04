@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
 import { useGroupsStore } from '@/stores/GroupsStore'
+import api from '@/services/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -14,6 +15,14 @@ const notificationType = ref('success')
 
 const groupsStore = useGroupsStore()
 
+// Track original values to detect changes
+const originalGroup = ref({
+  start_date: '',
+  end_date: '',
+  total_amount: 0,
+  is_ten_dates_chit: false
+})
+
 const group = ref({
   id: 0,
   name: '',
@@ -21,7 +30,10 @@ const group = ref({
   end_date: '',
   total_amount: 0,
   member_count: 0,
-  status: 'active'
+  status: 'active',
+  commission_percentage: 4,
+  is_ten_dates_chit: false,
+  number_of_months: 0
 })
 
 async function loadGroup() {
@@ -31,6 +43,14 @@ async function loadGroup() {
     const groupId = Number(route.params.id)
     const data = await groupsStore.getGroupById(groupId)
     group.value = data
+    
+    // Store original values to detect changes later
+    originalGroup.value = {
+      start_date: data.start_date,
+      end_date: data.end_date,
+      total_amount: data.total_amount,
+      is_ten_dates_chit: data.is_ten_dates_chit
+    }
   } catch (err: any) {
     console.error('Error loading group:', err)
     error.value = 'Failed to load group details. Please try again.'
@@ -44,13 +64,36 @@ async function handleSubmit() {
     loading.value = true
     error.value = ''
     const groupId = Number(route.params.id)
+    
+    // Check if fields that affect chit dates have changed
+    const chitDatesNeedRegeneration = 
+      originalGroup.value.start_date !== group.value.start_date ||
+      originalGroup.value.end_date !== group.value.end_date ||
+      originalGroup.value.total_amount !== group.value.total_amount ||
+      originalGroup.value.is_ten_dates_chit !== group.value.is_ten_dates_chit
+    
+    // Update the group first
     await groupsStore.updateGroup(groupId, group.value)
-    notificationMessage.value = 'Group updated successfully!'
+    
+    // If chit dates need regeneration, call the backend endpoint
+    if (chitDatesNeedRegeneration) {
+      try {
+        const response = await api.post(`/groups/${groupId}/regenerate-chit-dates`)
+        
+        notificationMessage.value = `Group updated successfully! ${response.data.count} chit dates were regenerated.`
+      } catch (chitError) {
+        console.error('Error regenerating chit dates:', chitError)
+        notificationMessage.value = 'Group updated successfully, but there was an issue regenerating chit dates. Please check the chit dates manually.'
+      }
+    } else {
+      notificationMessage.value = 'Group updated successfully!'
+    }
+    
     notificationType.value = 'success'
     showNotification.value = true
     setTimeout(() => {
       router.push('/groups')
-    }, 1500)
+    }, 2000)
   } catch (err: any) {
     console.error('Error updating group:', err)
     error.value = err.response?.data?.message || 'Failed to update group. Please try again.'
@@ -88,6 +131,21 @@ onMounted(loadGroup)
       </div>
 
       <div class="form-group">
+        <div class="checkbox-group">
+          <input
+            type="checkbox"
+            id="is_ten_dates_chit"
+            v-model="group.is_ten_dates_chit"
+            class="checkbox-input"
+          />
+          <label for="is_ten_dates_chit" class="checkbox-label">
+            Ten Dates Chit (10th, 20th, 30th of each month instead of monthly)
+          </label>
+        </div>
+        <small class="helper-text">⚠️ Changing this will regenerate all chit dates</small>
+      </div>
+
+      <div class="form-group">
         <label for="startDate">Start Date</label>
         <input 
           type="date" 
@@ -95,6 +153,7 @@ onMounted(loadGroup)
           v-model="group.start_date" 
           required
         >
+        <small class="helper-text">⚠️ Changing this will regenerate all chit dates</small>
       </div>
 
       <div class="form-group">
@@ -105,10 +164,11 @@ onMounted(loadGroup)
           v-model="group.end_date" 
           required
         >
+        <small class="helper-text">⚠️ Changing this will regenerate all chit dates</small>
       </div>
 
       <div class="form-group">
-        <label for="totalAmount">Total Amount</label>
+        <label for="totalAmount">Total Amount (₹)</label>
         <input 
           type="number" 
           id="totalAmount" 
@@ -117,6 +177,7 @@ onMounted(loadGroup)
           min="0"
           step="0.01"
         >
+        <small class="helper-text">⚠️ Changing this will recalculate minimum amounts</small>
       </div>
 
       <div class="form-group">
@@ -128,6 +189,19 @@ onMounted(loadGroup)
           required
           min="1"
         >
+      </div>
+
+      <div class="form-group">
+        <label for="commission_percentage">Commission Percentage (%)</label>
+        <input
+          type="number"
+          id="commission_percentage"
+          v-model="group.commission_percentage"
+          required
+          min="0"
+          max="100"
+          step="0.1"
+        />
       </div>
 
       <div class="form-group">
@@ -254,5 +328,29 @@ input:focus, textarea:focus, select:focus {
 button:disabled {
   opacity: 0.7;
   cursor: not-allowed;
+}
+
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.checkbox-input {
+  width: auto;
+  margin: 0;
+}
+
+.checkbox-label {
+  margin: 0;
+  font-weight: normal;
+  cursor: pointer;
+}
+
+.helper-text {
+  color: #6c757d;
+  font-size: 0.875rem;
+  margin-top: 0.25rem;
+  display: block;
 }
 </style> 

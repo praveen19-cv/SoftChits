@@ -183,7 +183,6 @@ async function loadChitDates() {
     const data = await store.fetchChitDates(Number(props.groupId))
     
     if (Array.isArray(data) && data.length) {
-      console.log('Loading existing chit dates from database');
       chitDates.value = data.map(d => ({ chit_date: d.chit_date, amount: Number(d.amount) || 0 }))
     } else {
       console.log('No existing chit dates found, generating for legacy group');

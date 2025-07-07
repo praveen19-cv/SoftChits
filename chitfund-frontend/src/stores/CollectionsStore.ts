@@ -255,8 +255,8 @@ export const useCollectionsStore = defineStore('collections', () => {
         await groupsStore.fetchGroups();
       }
 
-      const tableName = await getTableName(groupId);
-      const response = await api.get(`/collections/${groupId}/balances`);
+      // Use the collection-balance endpoint which returns individual balance records
+      const response = await api.get(`/collection-balance/${groupId}`);
       collectionBalances.value = response.data;
       return response.data;
     } catch (err: any) {
@@ -421,8 +421,8 @@ export const useCollectionsStore = defineStore('collections', () => {
   async function fetchCollectionBalancesForCustomer(customerId: number, groupId: number): Promise<CollectionBalance[]> {
     loading.value = true;
     try {
-      const tableName = await getTableName(groupId)
-      const response = await api.get(`/api/collection-balance/${tableName}/customer/${customerId}`)
+      // Use the collection-balance endpoint with customerId query parameter
+      const response = await api.get(`/collection-balance/${groupId}?customerId=${customerId}`)
       return response.data // Array of collection balances for the customer
     } catch (error) {
       console.error('Error fetching collection balances for customer:', error);
@@ -440,15 +440,12 @@ export const useCollectionsStore = defineStore('collections', () => {
     toGroupId: number;
     toInstallmentNumber: number;
     amount: number;
+    adjustmentDate?: string;
   }) {
     loading.value = true;
     try {
-      // This will be implemented when backend API is ready
-      // For now, throw an error to indicate it's not implemented
-      throw new Error('Collection adjustment API not yet implemented in backend');
-      
-      // const response = await api.post('/api/collections/adjust', adjustment);
-      // return response.data;
+      const response = await api.post('/collections/adjust', adjustment);
+      return response.data;
     } catch (error) {
       console.error('Error performing collection adjustment:', error);
       throw error;

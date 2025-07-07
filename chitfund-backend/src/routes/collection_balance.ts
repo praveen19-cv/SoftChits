@@ -83,14 +83,13 @@ router.get('/:groupId', async (req, res) => {
     const balances = await withRetry(() =>
       db.prepare(query).all(...params)
     );
-    console.log('Balances query executed successfully.');
+
     // Add debug logging to verify the monthly_subscription values
     if (balances.length > 0) {
-      console.log(`Sample balance record fields: ${Object.keys(balances[0] as object).join(', ')}`);
-      console.log(`First few balances with subscription data:`);
+      
       balances.slice(0, 3).forEach((balance, index) => {
         const b = balance as Record<string, any>;
-        console.log(`Balance ${index + 1} - Installment: ${b.installment_number}, monthly_subscription: ${b.monthly_subscription}, subscription_amount: ${b.subscription_amount}`);
+    
       });
     }
     res.json(balances);

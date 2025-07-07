@@ -1406,4 +1406,186 @@ router.get('/group/:groupId/members-count', async (req, res) => {
   }
 });
 
+// POST /api/collections/adjust - Adjust collections between installments
+router.post('/adjust', async (req, res) => {
+  try {
+    const { 
+      customerId, 
+      fromGroupId, 
+      fromInstallmentNumber, 
+      toGroupId, 
+      toInstallmentNumber, 
+      amount, 
+      adjustmentDate 
+    } = req.body;
+
+    // Validate required parameters
+    if (!customerId || !fromGroupId || !fromInstallmentNumber || !toGroupId || !toInstallmentNumber || !amount) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters: customerId, fromGroupId, fromInstallmentNumber, toGroupId, toInstallmentNumber, amount' 
+      });
+    }
+
+    if (amount <= 0) {
+      return res.status(400).json({ error: 'Amount must be greater than 0' });
+    }
+
+    const db = getWriteDb();
+    
+    // Get group details
+    const fromGroup = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(fromGroupId)
+    ) as Group;
+    const toGroup = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(toGroupId)
+    ) as Group;
+
+    if (!fromGroup || !toGroup) {
+      return res.status(404).json({ error: 'One or both groups not found' });
+    }
+
+    // Build table names
+    const fromBalanceTableName = GroupTableService.getTableName(fromGroupId, fromGroup.name, 'collection_balance');
+    const toBalanceTableName = GroupTableService.getTableName(toGroupId, toGroup.name, 'collection_balance');
+    const fromCollectionTableName = GroupTableService.getTableName(fromGroupId, fromGroup.name, 'collection');
+    const toCollectionTableName = GroupTableService.getTableName(toGroupId, toGroup.name, 'collection');
+
+    // Start transaction
+    await executeTransaction(db, async () => {
+      // 1. Get current balance from the source installment
+      const fromBalance = db.prepare(`
+        SELECT * FROM ${fromBalanceTableName} 
+        WHERE member_id = ? AND installment_number = ? AND group_id = ?
+      `).get(customerId, fromInstallmentNumber, fromGroupId) as CollectionBalance;
+
+      if (!fromBalance) {
+        throw new Error(`Source installment not found: Group ${fromGroupId}, Installment ${fromInstallmentNumber}, Customer ${customerId}`);
+      }
+
+      // Check if there's enough excess to transfer
+      if (fromBalance.remaining_balance >= 0) {
+        throw new Error(`Source installment has no excess. Remaining balance: ₹${fromBalance.remaining_balance}`);
+      }
+
+      const availableExcess = Math.abs(fromBalance.remaining_balance);
+      if (amount > availableExcess) {
+        throw new Error(`Transfer amount (₹${amount}) exceeds available excess (₹${availableExcess})`);
+      }
+
+      // 2. Get current balance from the target installment
+      const toBalance = db.prepare(`
+        SELECT * FROM ${toBalanceTableName} 
+        WHERE member_id = ? AND installment_number = ? AND group_id = ?
+      `).get(customerId, toInstallmentNumber, toGroupId) as CollectionBalance;
+
+      if (!toBalance) {
+        throw new Error(`Target installment not found: Group ${toGroupId}, Installment ${toInstallmentNumber}, Customer ${customerId}`);
+      }
+
+      // Check if target installment has shortage
+      if (toBalance.remaining_balance <= 0) {
+        throw new Error(`Target installment has no shortage. Remaining balance: ₹${toBalance.remaining_balance}`);
+      }
+
+      // 3. Calculate new balances
+      const newFromRemainingBalance = fromBalance.remaining_balance + amount; // Less negative (reducing excess)
+      const newToRemainingBalance = Math.max(0, toBalance.remaining_balance - amount); // Reducing shortage
+      const newTotalPaid = toBalance.total_paid + amount;
+      const isToCompleted = newToRemainingBalance === 0;
+
+      // 4. Update source balance
+      db.prepare(`
+        UPDATE ${fromBalanceTableName} 
+        SET remaining_balance = ?, last_updated = CURRENT_TIMESTAMP
+        WHERE member_id = ? AND installment_number = ? AND group_id = ?
+      `).run(newFromRemainingBalance, customerId, fromInstallmentNumber, fromGroupId);
+
+      // 5. Update target balance
+      db.prepare(`
+        UPDATE ${toBalanceTableName} 
+        SET total_paid = ?, remaining_balance = ?, is_completed = ?, last_updated = CURRENT_TIMESTAMP
+        WHERE member_id = ? AND installment_number = ? AND group_id = ?
+      `).run(newTotalPaid, newToRemainingBalance, isToCompleted ? 1 : 0, customerId, toInstallmentNumber, toGroupId);
+
+      // 6. Record the adjustment as collections with adjustment markers
+      const collectionDate = adjustmentDate || new Date().toISOString().slice(0, 10);
+
+      // For source installment (reducing the excess)
+      // Always check for existing record first to avoid constraint violations
+      const existingFromCollection = db.prepare(`
+        SELECT id, collection_amount FROM ${fromCollectionTableName}
+        WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
+      `).get(fromGroupId, customerId, fromInstallmentNumber, collectionDate) as { id: number; collection_amount: number } | undefined;
+
+      if (existingFromCollection) {
+        // Update existing collection record
+        db.prepare(`
+          UPDATE ${fromCollectionTableName} 
+          SET collection_amount = collection_amount - ?, 
+              updated_remaining_balance = ?
+          WHERE id = ?
+        `).run(amount, newFromRemainingBalance, existingFromCollection.id);
+      } else {
+        // Create new adjustment record
+        db.prepare(`
+          INSERT INTO ${fromCollectionTableName} (
+            group_id, member_id, installment_number, collection_amount, 
+            remaining_balance, is_completed, collection_date, created_at,
+            updated_remaining_balance
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          fromGroupId, customerId, fromInstallmentNumber, -amount, 
+          fromBalance.remaining_balance, fromBalance.is_completed, collectionDate,
+          new Date().toISOString(), newFromRemainingBalance
+        );
+      }
+
+      // For target installment (receiving the transfer)
+      const existingToCollection = db.prepare(`
+        SELECT id, collection_amount FROM ${toCollectionTableName}
+        WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
+      `).get(toGroupId, customerId, toInstallmentNumber, collectionDate) as { id: number; collection_amount: number } | undefined;
+
+      if (existingToCollection) {
+        // Update existing collection record
+        db.prepare(`
+          UPDATE ${toCollectionTableName} 
+          SET collection_amount = collection_amount + ?, 
+              is_completed = ?,
+              updated_remaining_balance = ?
+          WHERE id = ?
+        `).run(amount, isToCompleted ? 1 : 0, newToRemainingBalance, existingToCollection.id);
+      } else {
+        // Create new adjustment record
+        db.prepare(`
+          INSERT INTO ${toCollectionTableName} (
+            group_id, member_id, installment_number, collection_amount, 
+            remaining_balance, is_completed, collection_date, created_at,
+            updated_remaining_balance
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          toGroupId, customerId, toInstallmentNumber, amount, 
+          toBalance.remaining_balance, toBalance.is_completed, collectionDate,
+          new Date().toISOString(), newToRemainingBalance
+        );
+      }
+
+      console.log(`Collection adjustment completed: Transferred ₹${amount} from Group ${fromGroupId} Installment ${fromInstallmentNumber} to Group ${toGroupId} Installment ${toInstallmentNumber} for Customer ${customerId}`);
+    });
+
+    res.json({ 
+      success: true, 
+      message: `Successfully transferred ₹${amount} from Group ${fromGroupId} Installment ${fromInstallmentNumber} to Group ${toGroupId} Installment ${toInstallmentNumber}`,
+      adjustmentDate: adjustmentDate || new Date().toISOString().slice(0, 10)
+    });
+
+  } catch (error: any) {
+    console.error('Error performing collection adjustment:', error);
+    res.status(500).json({ 
+      error: 'Failed to perform collection adjustment', 
+      details: error.message 
+    });
+  }
+});
+
 export default router;

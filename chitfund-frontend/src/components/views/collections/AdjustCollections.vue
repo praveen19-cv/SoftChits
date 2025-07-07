@@ -44,7 +44,7 @@
               {{ selectedGroupsText || 'Select Groups' }}
               <span class="cs-dropdown-arrow">▼</span>
             </div>
-            <div v-if="groupDropdownOpen" class="cs-dropdown-list multi-select">
+            <div v-if="groupDropdownOpen" class="cs-dropdown-list multi-select" @click.stop>
               <input
                 id="group-search"
                 name="group-search"
@@ -53,16 +53,35 @@
                 placeholder="Search groups..."
                 @click.stop
               />
+              <div class="dropdown-actions">
+                <button 
+                  type="button" 
+                  class="action-btn select-all-btn" 
+                  @click="selectAllGroups"
+                  :disabled="selectedGroupIds.length === filteredGroups.length"
+                >
+                  Select All
+                </button>
+                <button 
+                  type="button" 
+                  class="action-btn clear-all-btn" 
+                  @click="clearAllGroups"
+                  :disabled="selectedGroupIds.length === 0"
+                >
+                  Clear All
+                </button>
+              </div>
               <div
                 v-for="group in filteredGroups"
                 :key="group.id"
                 class="cs-dropdown-item checkbox-item"
+                :class="{ selected: selectedGroupIds.includes(group.id) }"
                 @click="toggleGroup(group)"
               >
                 <input 
                   type="checkbox" 
                   :checked="selectedGroupIds.includes(group.id)"
-                  @click.stop
+                  @change="toggleGroup(group)"
                 />
                 <span>{{ group.name }}</span>
               </div>
@@ -144,7 +163,8 @@
                     (Excess: ₹{{ installment.excessShortage.toLocaleString() }})
                   </div>
                   <div v-if="!filteredFromInstallments.length" class="cs-dropdown-noresult">
-                    No installments with excess found
+                    No installments with excess found. 
+                    <br><small>Excess occurs when remaining_balance is negative (overpayment).</small>
                   </div>
                 </div>
               </div>
@@ -188,7 +208,8 @@
                     (Shortage: ₹{{ Math.abs(installment.excessShortage).toLocaleString() }})
                   </div>
                   <div v-if="!filteredToInstallments.length" class="cs-dropdown-noresult">
-                    No installments with shortage found
+                    No installments with shortage found.
+                    <br><small>Shortage occurs when remaining_balance is positive (underpayment).</small>
                   </div>
                 </div>
               </div>
@@ -206,6 +227,18 @@
               />
               <div v-if="maxTransferAmount > 0" class="amount-hint">
                 Max available: ₹{{ maxTransferAmount.toLocaleString() }}
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label>Adjustment Date</label>
+              <input 
+                type="date" 
+                v-model="adjustmentForm.adjustmentDate" 
+                placeholder="Adjustment date"
+              />
+              <div class="date-hint">
+                <small>Defaults to today if not specified</small>
               </div>
             </div>
 
@@ -232,7 +265,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useMembersStore } from '@/stores/MembersStore'
@@ -281,7 +314,8 @@ const adjustmentForm = ref({
   fromInstallmentNumber: '',
   toGroupId: '',
   toInstallmentNumber: '',
-  amount: ''
+  amount: '',
+  adjustmentDate: ''
 })
 
 const fromInstallmentDropdownOpen = ref(false)
@@ -326,7 +360,7 @@ const fromInstallments = computed(() => {
   if (!adjustmentForm.value.fromGroupId) return []
   return customerInstallmentData.value.filter(
     installment => installment.groupId === parseInt(adjustmentForm.value.fromGroupId) && 
-                  installment.excessShortage > 0
+                  installment.excessShortage > 0 // Only installments with actual excess (positive excessShortage)
   )
 })
 
@@ -334,7 +368,7 @@ const toInstallments = computed(() => {
   if (!adjustmentForm.value.toGroupId) return []
   return customerInstallmentData.value.filter(
     installment => installment.groupId === parseInt(adjustmentForm.value.toGroupId) && 
-                  installment.excessShortage < 0
+                  installment.excessShortage < 0 // Only installments with shortage (negative excessShortage)
   )
 })
 
@@ -360,7 +394,8 @@ const maxTransferAmount = computed(() => {
             inst.installmentNumber === parseInt(adjustmentForm.value.fromInstallmentNumber)
   )
   
-  return fromInstallment ? fromInstallment.excessShortage : 0
+  // Return the actual excess amount (should be positive for excess installments)
+  return fromInstallment && fromInstallment.excessShortage > 0 ? fromInstallment.excessShortage : 0
 })
 
 const canPerformTransfer = computed(() => {
@@ -411,13 +446,33 @@ function toggleGroup(group: { id: number; name: string }) {
   resetAdjustmentForm()
 }
 
+function selectAllGroups() {
+  const allFilteredIds = filteredGroups.value.map(g => g.id)
+  selectedGroupIds.value = [...new Set([...selectedGroupIds.value, ...allFilteredIds])]
+  
+  // Reset data when groups change
+  customerInstallmentData.value = []
+  collectionsData.value = []
+  resetAdjustmentForm()
+}
+
+function clearAllGroups() {
+  selectedGroupIds.value = []
+  
+  // Reset data when groups change
+  customerInstallmentData.value = []
+  collectionsData.value = []
+  resetAdjustmentForm()
+}
+
 function resetAdjustmentForm() {
   adjustmentForm.value = {
     fromGroupId: '',
     fromInstallmentNumber: '',
     toGroupId: '',
     toInstallmentNumber: '',
-    amount: ''
+    amount: '',
+    adjustmentDate: ''
   }
 }
 
@@ -435,6 +490,49 @@ function selectFromInstallment(installment: any) {
   adjustmentForm.value.fromInstallmentNumber = installment.installmentNumber.toString()
   fromInstallmentDropdownOpen.value = false
   fromInstallmentSearch.value = ''
+  
+  // Auto-populate adjustment date with the latest collection date for this installment
+  autoPopulateAdjustmentDate()
+}
+
+async function autoPopulateAdjustmentDate() {
+  if (!adjustmentForm.value.fromGroupId || !adjustmentForm.value.fromInstallmentNumber || !selectedCustomerId.value) {
+    return
+  }
+  
+  try {
+    // Find the latest collection date for this customer, group, and installment
+    const groupId = parseInt(adjustmentForm.value.fromGroupId)
+    const installmentNumber = parseInt(adjustmentForm.value.fromInstallmentNumber)
+    
+    // Get collections for this specific installment to find the latest date
+    const collections = await collectionsStore.fetchCollectionsByCustomerAndDateRange(
+      String(selectedCustomerId.value),
+      groupId,
+      '1900-01-01',
+      new Date().toISOString().slice(0, 10)
+    )
+    
+    // Filter for the specific installment and find the latest date
+    const installmentCollections = collections.filter((c: any) => 
+      c.installment_number === installmentNumber
+    )
+    
+    if (installmentCollections.length > 0) {
+      // Sort by collection date and get the latest
+      installmentCollections.sort((a: any, b: any) => 
+        new Date(b.collection_date).getTime() - new Date(a.collection_date).getTime()
+      )
+      adjustmentForm.value.adjustmentDate = installmentCollections[0].collection_date
+    } else {
+      // Default to today if no collections found
+      adjustmentForm.value.adjustmentDate = new Date().toISOString().slice(0, 10)
+    }
+  } catch (error) {
+    console.warn('Could not auto-populate adjustment date:', error)
+    // Default to today on error
+    adjustmentForm.value.adjustmentDate = new Date().toISOString().slice(0, 10)
+  }
 }
 
 function selectToInstallment(installment: any) {
@@ -517,17 +615,38 @@ async function loadCustomerData() {
         // Filter balances for this specific customer
         const customerBalances = balancesResponse.filter((balance: any) => balance.member_id === selectedCustomerId.value)
 
+        console.log(`Group ${groupId} - Customer balances:`, customerBalances.map((b: any) => ({
+          installment: b.installment_number,
+          total_paid: b.total_paid,
+          remaining_balance: b.remaining_balance,
+          monthly_subscription: b.monthly_subscription,
+          subscription_amount: b.subscription_amount
+        })))
+
         customerBalances.forEach((balance: any) => {
-          const subscriptionAmount = balance.total_paid + balance.remaining_balance
-          // Excess/Shortage calculation: if remaining_balance is negative, there's excess
-          // if remaining_balance is positive, there's shortage
-          const excessShortage = balance.remaining_balance * -1 // Negative remaining = excess, positive remaining = shortage
+          // Get subscription amount for this installment
+          const subscriptionAmount = balance.monthly_subscription || balance.subscription_amount
+          
+          // Calculate excess/shortage properly:
+          // - If remaining_balance is negative, it means there's excess payment (overpaid)
+          // - If remaining_balance is positive, it means there's shortage (underpaid)
+          // - Only consider it as transferable excess if remaining_balance is actually negative
+          let excessShortage = 0
+          
+          if (balance.remaining_balance < 0) {
+            // Negative remaining balance = excess payment that can be transferred
+            excessShortage = Math.abs(balance.remaining_balance)
+          } else if (balance.remaining_balance > 0) {
+            // Positive remaining balance = shortage that needs payment
+            excessShortage = -balance.remaining_balance
+          }
+          // If remaining_balance is exactly 0, then excessShortage stays 0 (exact payment)
 
           allInstallmentData.push({
             groupId: groupId,
             groupName: groupName,
             installmentNumber: balance.installment_number,
-            subscriptionAmount: subscriptionAmount,
+            subscriptionAmount: subscriptionAmount || (balance.total_paid + Math.abs(balance.remaining_balance)),
             totalPaid: balance.total_paid,
             remainingBalance: balance.remaining_balance,
             excessShortage: excessShortage,
@@ -554,6 +673,26 @@ async function loadCustomerData() {
     })
 
     customerInstallmentData.value = allInstallmentData
+    
+    // Debug: Log the calculated excess/shortage data
+    console.log('Final installment data with excess/shortage:', allInstallmentData.map((inst: any) => ({
+      group: inst.groupName,
+      installment: inst.installmentNumber,
+      totalPaid: inst.totalPaid,
+      remainingBalance: inst.remainingBalance,
+      excessShortage: inst.excessShortage,
+      status: inst.excessShortage > 0 ? 'excess' : inst.excessShortage < 0 ? 'shortage' : 'exact'
+    })))
+    
+    const excessInstallments = allInstallmentData.filter((inst: any) => inst.excessShortage > 0)
+    const shortageInstallments = allInstallmentData.filter((inst: any) => inst.excessShortage < 0)
+    
+    console.log(`Found ${excessInstallments.length} installments with excess and ${shortageInstallments.length} with shortage`)
+    
+    if (excessInstallments.length === 0) {
+      showErrorNotification('No installments with excess payment found for this customer. Excess payments occur when the remaining_balance is negative (customer has overpaid).')
+    }
+    
     resetAdjustmentForm()
 
   } catch (error: any) {
@@ -571,6 +710,9 @@ async function performTransfer() {
   try {
     const transferAmount = parseFloat(adjustmentForm.value.amount)
     
+    // Use the specified date or default to today
+    const adjustmentDate = adjustmentForm.value.adjustmentDate || new Date().toISOString().slice(0, 10)
+    
     // Call the backend API to perform the adjustment
     await collectionsStore.performCollectionAdjustment({
       customerId: selectedCustomerId.value!,
@@ -578,14 +720,14 @@ async function performTransfer() {
       fromInstallmentNumber: parseInt(adjustmentForm.value.fromInstallmentNumber),
       toGroupId: parseInt(adjustmentForm.value.toGroupId),
       toInstallmentNumber: parseInt(adjustmentForm.value.toInstallmentNumber),
-      amount: transferAmount
+      amount: transferAmount,
+      adjustmentDate: adjustmentDate
     })
 
-    // This part will execute when backend is implemented
     const fromGroup = groups.value.find(g => g.id === parseInt(adjustmentForm.value.fromGroupId))?.name
     const toGroup = groups.value.find(g => g.id === parseInt(adjustmentForm.value.toGroupId))?.name
     
-    showSuccessNotification(`Successfully transferred ₹${transferAmount.toLocaleString()} from ${fromGroup} Installment ${adjustmentForm.value.fromInstallmentNumber} to ${toGroup} Installment ${adjustmentForm.value.toInstallmentNumber}`)
+    showSuccessNotification(`Successfully transferred ₹${transferAmount.toLocaleString()} from ${fromGroup} Installment ${adjustmentForm.value.fromInstallmentNumber} to ${toGroup} Installment ${adjustmentForm.value.toInstallmentNumber} on ${adjustmentDate}`)
 
     // Reload customer data to reflect the changes
     await loadCustomerData()
@@ -598,7 +740,7 @@ async function performTransfer() {
     if (error.message?.includes('not yet implemented')) {
       showErrorNotification('Collection adjustment feature requires backend API implementation. Please contact the developer to implement the /api/collections/adjust endpoint.')
     } else {
-      showErrorNotification(error?.response?.data?.message || 'Failed to perform transfer')
+      showErrorNotification(error?.response?.data?.details || error?.response?.data?.message || 'Failed to perform transfer')
     }
   }
 }
@@ -618,8 +760,23 @@ async function loadInitialData() {
   }
 }
 
+function handleClickOutside(event: Event) {
+  const target = event.target as HTMLElement
+  if (!target.closest('.cs-dropdown')) {
+    customerDropdownOpen.value = false
+    groupDropdownOpen.value = false
+    fromInstallmentDropdownOpen.value = false
+    toInstallmentDropdownOpen.value = false
+  }
+}
+
 onMounted(() => {
   loadInitialData()
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
 })
 </script>
 
@@ -679,7 +836,7 @@ label {
   font-weight: 600;
 }
 
-input[type="number"], select {
+input[type="number"], input[type="date"], select {
   width: 100%;
   padding: 0.7rem;
   border: 1.5px solid #b2bec3;
@@ -689,7 +846,7 @@ input[type="number"], select {
   transition: border 0.2s;
 }
 
-input[type="number"]:focus, select:focus {
+input[type="number"]:focus, input[type="date"]:focus, select:focus {
   border-color: #2980b9;
   outline: none;
 }
@@ -771,6 +928,48 @@ input[type="number"]:focus, select:focus {
   outline: none;
 }
 
+.dropdown-actions {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #e9ecef;
+  background: #f8f9fa;
+}
+
+.action-btn {
+  flex: 1;
+  padding: 0.4rem 0.8rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.select-all-btn {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.select-all-btn:hover:not(:disabled) {
+  background: #bbdefb;
+}
+
+.clear-all-btn {
+  background: #fce4ec;
+  color: #c2185b;
+}
+
+.clear-all-btn:hover:not(:disabled) {
+  background: #f8bbd9;
+}
+
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .cs-dropdown-item {
   padding: 0.7rem 1rem;
   cursor: pointer;
@@ -790,6 +989,21 @@ input[type="number"]:focus, select:focus {
 .checkbox-item input[type="checkbox"] {
   width: auto;
   margin: 0;
+  cursor: pointer;
+  transform: scale(1.1);
+}
+
+.checkbox-item.selected {
+  background: #e8f5e8;
+  font-weight: 600;
+}
+
+.checkbox-item:hover {
+  background: #e3f2fd;
+}
+
+.checkbox-item.selected:hover {
+  background: #d4edda;
 }
 
 .cs-dropdown-noresult {
@@ -904,6 +1118,12 @@ tr:hover {
 }
 
 .amount-hint {
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: 0.25rem;
+}
+
+.date-hint {
   font-size: 0.85rem;
   color: #666;
   margin-top: 0.25rem;

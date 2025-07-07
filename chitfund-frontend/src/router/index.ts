@@ -59,6 +59,11 @@ const routes: Array<RouteRecordRaw> = [
     name: 'add-collection',
     component: () => import('../components/views/collections/AddCollection.vue')
   },
+  {
+    path: '/collections/adjust',
+    name: 'adjust-collections',
+    component: () => import('../components/views/collections/AdjustCollections.vue')
+  },
 
   ...reportRoutes
 ]

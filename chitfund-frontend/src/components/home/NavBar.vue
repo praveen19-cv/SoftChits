@@ -80,6 +80,7 @@ onUnmounted(() => {
         <div v-show="activeMenu === 'collections'" class="dropdown-menu">
           <router-link to="/collections/view" class="dropdown-item" @click="handleNavigation">View Collections</router-link>
           <router-link to="/collections/add" class="dropdown-item" @click="handleNavigation">Add Collection</router-link>
+          <router-link to="/collections/adjust" class="dropdown-item" @click="handleNavigation">Adjust Collections</router-link>
         </div>
       </div>
 

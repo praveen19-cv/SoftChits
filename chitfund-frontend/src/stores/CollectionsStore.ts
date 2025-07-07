@@ -9,6 +9,7 @@ export interface AddCollection {
   installment_number: number;
   collection_amount: number;
   date: string;
+  allow_excess?: boolean;
 }
 
 export interface ViewCollection {
@@ -129,7 +130,8 @@ export const useCollectionsStore = defineStore('collections', () => {
         member_id: collection.member_id,
         installment_number: collection.installment_number,
         collection_amount: collection.collection_amount,
-        collection_date: collection.date
+        collection_date: collection.date,
+        allow_excess: collection.allow_excess || false
       };
 
       // First, ensure the table exists
@@ -407,18 +409,62 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
-  async function fetchCollectionBalancesForCustomer(customerId: number, groupId: number) {
+  async function fetchCollectionBalancesForCustomer(customerId: number, groupId: number): Promise<CollectionBalance[]> {
+    loading.value = true;
     try {
-      loading.value = true;
-      error.value = '';
-      
-      const response = await api.get(`/collection-balance/${groupId}`, {
-        params: { customerId }
-      })
+      const tableName = await getTableName(groupId)
+      const response = await api.get(`/api/collection-balance/${tableName}/customer/${customerId}`)
       return response.data // Array of collection balances for the customer
     } catch (error) {
       console.error('Error fetching collection balances for customer:', error);
       throw error
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  // Collection adjustment methods (for future backend implementation)
+  async function performCollectionAdjustment(adjustment: {
+    customerId: number;
+    fromGroupId: number;
+    fromInstallmentNumber: number;
+    toGroupId: number;
+    toInstallmentNumber: number;
+    amount: number;
+  }) {
+    loading.value = true;
+    try {
+      // This will be implemented when backend API is ready
+      // For now, throw an error to indicate it's not implemented
+      throw new Error('Collection adjustment API not yet implemented in backend');
+      
+      // const response = await api.post('/api/collections/adjust', adjustment);
+      // return response.data;
+    } catch (error) {
+      console.error('Error performing collection adjustment:', error);
+      throw error;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function getAdjustmentHistory(customerId: number, groupIds?: number[]) {
+    loading.value = true;
+    try {
+      const params = new URLSearchParams();
+      params.append('customerId', customerId.toString());
+      if (groupIds && groupIds.length > 0) {
+        groupIds.forEach(id => params.append('groupIds', id.toString()));
+      }
+      
+      // This will be implemented when backend API is ready
+      throw new Error('Adjustment history API not yet implemented in backend');
+      
+      // const response = await api.get(`/api/collections/adjustments?${params.toString()}`);
+      // return response.data;
+    } catch (error) {
+      console.error('Error fetching adjustment history:', error);
+      throw error;
     } finally {
       loading.value = false;
     }
@@ -437,6 +483,7 @@ export const useCollectionsStore = defineStore('collections', () => {
     deleteCollection,
     fetchCollectionsByGroup,
     fetchCollectionBalances,
+    fetchCollectionBalancesForCustomer,
     fetchIncompleteCollectionBalances,
     exportNextMonthPayout,
     resetNextMonthPayout,
@@ -445,7 +492,8 @@ export const useCollectionsStore = defineStore('collections', () => {
     fetchCollectionsByCustomerAndDateRange,
     fetchCollectionsByTableNameAndDate,
     fetchPendingInstallmentsForCustomer,
-    fetchCollectionBalancesForCustomer,
-    setMonthlySubscriptionExportStatus
+    setMonthlySubscriptionExportStatus,
+    performCollectionAdjustment,
+    getAdjustmentHistory
   };
 });

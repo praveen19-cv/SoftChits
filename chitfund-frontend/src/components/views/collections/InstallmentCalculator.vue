@@ -5,11 +5,18 @@
       :value="displayValue"
       @input="handleInstallmentInput"
       @blur="handleInstallmentBlur"
+      @focus="handleInstallmentFocus"
       :placeholder="placeholderText"
       class="installment-input"
-      :class="{ 'auto-calculated': isAutoCalculated }"
+      :class="{ 
+        'auto-calculated': isAutoCalculated && !isUserEdited && props.collectionAmount <= 0,
+        'auto-filled': isAutoCalculated && !isUserEdited && props.collectionAmount > 0
+      }"
+      title="Format: '3,4' for installments or '3:3400,4:5500' for specific amounts"
     />
-    <small v-if="isAutoCalculated" class="auto-indicator">Auto-calculated</small>
+    <small v-if="isAutoCalculated && !isUserEdited && props.collectionAmount <= 0" class="auto-indicator">Auto-calculated</small>
+    <small v-else-if="isAutoCalculated && !isUserEdited && props.collectionAmount > 0" class="auto-filled-indicator">Auto-filled</small>
+    <small v-else-if="hasSpecificAmounts" class="format-indicator">Specific amounts</small>
   </div>
 </template>
 
@@ -25,11 +32,13 @@ interface Props {
   modelValue: string
   isAfterSubmission?: boolean
   submittedCollections?: any[]
+  installmentAmounts?: { [key: number]: number } // New prop for specific amounts
 }
 
 interface Emits {
   (e: 'update:modelValue', value: string): void
   (e: 'installment-change', installment: string): void
+  (e: 'update:installmentAmounts', amounts: { [key: number]: number }): void // New emit for specific amounts
 }
 
 const props = defineProps<Props>()
@@ -38,11 +47,33 @@ const emit = defineEmits<Emits>()
 const isUserEdited = ref(false)
 const isAutoCalculated = ref(true)
 
-const displayValue = computed(() => props.modelValue)
+const displayValue = computed(() => {
+  // If auto-calculated and user hasn't edited AND no amount entered, show empty string (so placeholder shows)
+  if (isAutoCalculated.value && !isUserEdited.value && props.collectionAmount <= 0) {
+    return ''
+  }
+  // If amount is entered and installments are auto-calculated, show the calculated value
+  return props.modelValue
+})
+
+const hasSpecificAmounts = computed(() => {
+  return props.modelValue.includes(':')
+})
 
 const placeholderText = computed(() => {
+  // If auto-calculated and no amount entered yet, show the calculated value in placeholder
+  if (isAutoCalculated.value && !isUserEdited.value && props.collectionAmount <= 0) {
+    const currentInstallment = getCurrentInstallmentNumber()
+    return currentInstallment ? `Auto: ${currentInstallment}` : 'e.g., 3,4 or 3:3400,4:5500'
+  }
+  
+  // If amount is entered and auto-calculated, just show helpful text
+  if (isAutoCalculated.value && !isUserEdited.value && props.collectionAmount > 0) {
+    return 'Auto-calculated from amount'
+  }
+  
   const currentInstallment = getCurrentInstallmentNumber()
-  return currentInstallment ? `Current: ${currentInstallment}` : '1'
+  return currentInstallment ? `Current: ${currentInstallment}` : 'e.g., 3,4 or 3:3400,4:5500'
 })
 
 function getCurrentInstallmentNumber(): number {
@@ -59,10 +90,18 @@ function calculateAutoInstallment(): string {
   if (props.isAfterSubmission && props.submittedCollections) {
     const memberCollections = props.submittedCollections.filter(c => c.member_id === props.memberId)
     if (memberCollections.length > 0) {
-      const installmentString = memberCollections
-        .map(c => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
-        .join(',')
-      return installmentString
+      // IMPORTANT: Since we now create separate rows for each collection,
+      // we should only return the installment for THIS specific row's collection
+      // The row should already have the correct installment number set by AddCollection.vue
+      // So we should not be auto-calculating here for after submission mode
+      // Return the current modelValue as-is if it exists
+      if (props.modelValue && props.modelValue.trim()) {
+        return props.modelValue
+      }
+      
+      // Fallback: if no modelValue, return the first collection's installment
+      const firstCollection = memberCollections[0]
+      return `${firstCollection.installment_number}${firstCollection.is_completed ? 'c' : ''}`
     } else {
       // Member has no collections on this date - return empty string
       return ''
@@ -71,6 +110,14 @@ function calculateAutoInstallment(): string {
 
   if (props.collectionAmount <= 0 || !props.monthlySubscription) {
     return getCurrentInstallmentNumber().toString()
+  }
+
+  // Check if we have specific amounts set
+  if (props.installmentAmounts && Object.keys(props.installmentAmounts).length > 0) {
+    // Return the installments with specific amounts
+    return Object.keys(props.installmentAmounts)
+      .map(inst => `${inst}:${props.installmentAmounts![parseInt(inst)]}`)
+      .join(',')
   }
 
   // Use only incomplete balances (which are already filtered)
@@ -120,17 +167,57 @@ function calculateAutoInstallment(): string {
 function handleInstallmentInput(event: Event) {
   const target = event.target as HTMLInputElement
   const value = target.value
-  isUserEdited.value = true
-  isAutoCalculated.value = false
+  
+  // Mark as user-edited only if there's actual input
+  if (value.trim()) {
+    isUserEdited.value = true
+    isAutoCalculated.value = false
+  }
+  
+  // Parse and handle specific amounts format
+  parseAndEmitInstallmentData(value)
+  
   emit('update:modelValue', value)
   emit('installment-change', value)
 }
 
-function handleInstallmentBlur() {
-  // Validate and format the input
-  if (!isUserEdited.value) return
+function parseAndEmitInstallmentData(value: string) {
+  const installmentAmounts: { [key: number]: number } = {}
   
+  // Only treat as specific amounts if it contains ':' (e.g., "3:3400,4:5500")
+  // Do NOT treat "2c,3" or "2,3" as specific amounts
+  if (value.includes(':')) {
+    // Parse format like "3:3400,4:5500"
+    const parts = value.split(',').map(part => part.trim())
+    let totalAmount = 0
+    
+    for (const part of parts) {
+      if (part.includes(':')) {
+        const [instStr, amountStr] = part.split(':')
+        const instNum = parseInt(instStr.trim())
+        const amount = parseFloat(amountStr.trim())
+        
+        if (!isNaN(instNum) && !isNaN(amount)) {
+          installmentAmounts[instNum] = amount
+          totalAmount += amount
+        }
+      }
+    }
+    
+    // Update the total amount in the parent component
+    if (totalAmount > 0) {
+      // We'll need to emit this to update the amount field
+      emit('update:installmentAmounts', installmentAmounts)
+    }
+  } else {
+    // Regular format (including "2c,3" and "2,3"), clear specific amounts
+    emit('update:installmentAmounts', {})
+  }
+}
+
+function handleInstallmentBlur() {
   const value = props.modelValue.trim()
+  
   if (!value) {
     // Reset to auto-calculated if empty
     isUserEdited.value = false
@@ -141,35 +228,78 @@ function handleInstallmentBlur() {
   }
 }
 
-// Watch for collection amount changes to auto-calculate installments
-watch([() => props.collectionAmount, () => props.memberBalances, () => props.isAfterSubmission, () => props.submittedCollections], () => {
-  if (!isUserEdited.value) {
-    // For after submission, always show the submitted data
-    if (props.isAfterSubmission && props.submittedCollections) {
-      isAutoCalculated.value = false // Don't show "Auto-calculated" for submitted data
-      const autoValue = calculateAutoInstallment()
-      emit('update:modelValue', autoValue)
-      emit('installment-change', autoValue)
-    } else if (props.collectionAmount > 0) {
-      isAutoCalculated.value = true
-      const autoValue = calculateAutoInstallment()
+function handleInstallmentFocus() {
+  // If it's auto-calculated (either placeholder or filled), populate the field for editing
+  if (isAutoCalculated.value && !isUserEdited.value) {
+    const autoValue = calculateAutoInstallment()
+    if (autoValue) {
       emit('update:modelValue', autoValue)
       emit('installment-change', autoValue)
     }
   }
+}
+
+// Watch for collection amount changes to auto-calculate installments
+watch([() => props.collectionAmount, () => props.memberBalances, () => props.isAfterSubmission, () => props.submittedCollections, () => props.installmentAmounts], ([newAmount, _, isAfterSub, __, ____], [oldAmount]) => {
+  // Skip auto-calculation entirely when in after submission mode
+  // The installment values are already correctly set by the parent component
+  if (isAfterSub) {
+    // In after submission mode, do not auto-calculate anything
+    // The installment values are pre-set and should remain as they are
+    isAutoCalculated.value = false
+    isUserEdited.value = false
+    return
+  }
+  
+  // If amount changed from external source (not user editing), reset auto-calculation
+  if (newAmount !== oldAmount) {
+    // If amount is cleared or set to 0, clear installment and reset state
+    if (newAmount <= 0) {
+      isUserEdited.value = false
+      isAutoCalculated.value = true
+      emit('update:modelValue', '')
+      emit('installment-change', '')
+      return
+    }
+    
+    // If amount is set to a positive value, reset to auto-calculation mode
+    if (newAmount > 0) {
+      isUserEdited.value = false
+      isAutoCalculated.value = true
+    }
+  }
+  
+  // Only auto-calculate if user hasn't manually edited the field
+  if (!isUserEdited.value) {
+    isAutoCalculated.value = true
+    const autoValue = calculateAutoInstallment()
+    emit('update:modelValue', autoValue)
+    emit('installment-change', autoValue)
+  }
 }, { immediate: true })
 
-// Reset auto-calculation when member changes
+// Reset auto-calculation when member changes or when we're viewing after submission
 watch(() => props.memberId, () => {
-  isUserEdited.value = false
-  if (props.isAfterSubmission && props.submittedCollections) {
-    isAutoCalculated.value = false // Don't show "Auto-calculated" for submitted data
-  } else {
-    isAutoCalculated.value = true
+  // Skip auto-calculation entirely when in after submission mode
+  if (props.isAfterSubmission) {
+    isUserEdited.value = false
+    isAutoCalculated.value = false
+    return
   }
+  
+  isUserEdited.value = false
+  isAutoCalculated.value = true
   const autoValue = calculateAutoInstallment()
   emit('update:modelValue', autoValue)
   emit('installment-change', autoValue)
+})
+
+// Reset user editing state when switching to after submission mode
+watch(() => props.isAfterSubmission, (newValue) => {
+  if (newValue) {
+    isUserEdited.value = false // Allow editing of submitted data
+    isAutoCalculated.value = false // Don't auto-calculate in after submission mode
+  }
 })
 </script>
 
@@ -196,6 +326,18 @@ watch(() => props.memberId, () => {
   border-color: #87ceeb;
 }
 
+.installment-input.auto-calculated::placeholder {
+  color: #3498db;
+  font-weight: 500;
+}
+
+.installment-input.auto-filled {
+  background-color: #f0f8ff;
+  border-color: #87ceeb;
+  color: #2c3e50;
+  font-weight: 500;
+}
+
 .auto-indicator {
   position: absolute;
   top: -0.2rem;
@@ -204,5 +346,27 @@ watch(() => props.memberId, () => {
   color: #666;
   background: white;
   padding: 0 0.25rem;
+}
+
+.auto-filled-indicator {
+  position: absolute;
+  top: -0.2rem;
+  right: 0.25rem;
+  font-size: 0.7rem;
+  color: #2c3e50;
+  background: white;
+  padding: 0 0.25rem;
+  font-weight: 600;
+}
+
+.format-indicator {
+  position: absolute;
+  top: -0.2rem;
+  right: 0.25rem;
+  font-size: 0.7rem;
+  color: #e67e22;
+  background: white;
+  padding: 0 0.25rem;
+  font-weight: 600;
 }
 </style>

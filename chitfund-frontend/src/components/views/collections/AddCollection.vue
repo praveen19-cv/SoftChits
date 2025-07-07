@@ -233,34 +233,96 @@ async function loadExistingCollections() {
       isAfterSubmission.value = true;
       submittedCollections.value = existingCollections;
 
-      // Update collection sheet with submitted collection data
-      collectionSheet.value = collectionSheet.value.map(row => {
-        const memberCollections = existingCollections.filter(c => c.member_id === row.memberId);
-        if (memberCollections.length > 0) {
-          // Show the actual submitted data
-          const firstCollection = memberCollections[0];
-          const installmentString = memberCollections
-            .map(c => `${c.installment_number}${c.is_completed ? 'c' : ''}`)
-            .join(',');
-          const totalAmount = memberCollections.reduce((sum: number, c: ExistingCollection) => sum + c.collection_amount, 0);
-          
-          // For installment balances, show the actual remaining balance from collection table
-          const installmentBalances: { [key: number]: number } = {};
-          memberCollections.forEach((c: ExistingCollection) => {
-            // Show the remaining balance as it was when the collection was made
-            installmentBalances[c.installment_number] = c.remaining_balance;
-          });
-          
-          return {
-            ...row,
-            id: firstCollection.id,
-            installment: installmentString,
-            amount: totalAmount.toString(),
-            installmentBalances
-          };
+      // Create a new collection sheet with separate rows for each collection
+      const newCollectionSheet: CollectionSheetRow[] = [];
+      
+      // Sort all collections by member and installment number for consistent display
+      existingCollections.sort((a, b) => {
+        if (a.member_id !== b.member_id) {
+          return a.member_id - b.member_id;
         }
-        return row;
+        return a.installment_number - b.installment_number;
       });
+      
+      // Create individual rows for each collection record - EACH INSTALLMENT GETS ITS OWN ROW
+      let globalRowIndex = 0;
+      const memberRowCounters = new Map<number, number>(); // Track how many rows each member has
+      
+      existingCollections.forEach((collection) => {
+        // Find the original member info
+        const originalRow = collectionSheet.value.find(r => r.memberId === collection.member_id);
+        if (!originalRow) return;
+        
+        // Determine if this is an additional row for the member
+        const memberRowCount = memberRowCounters.get(collection.member_id) || 0;
+        const isFirstRowForMember = memberRowCount === 0;
+        const isAdditionalRow = !isFirstRowForMember;
+        
+        // Update counter for this member
+        memberRowCounters.set(collection.member_id, memberRowCount + 1);
+        
+        // Create installment balances and amounts for this specific collection ONLY
+        // Each row shows ONLY the installment and balance for that specific collection
+        const installmentBalances: { [key: number]: number } = {};
+        const installmentAmounts: { [key: number]: number } = {};
+        
+        // Show ONLY the balance and amount for THIS specific installment
+        installmentBalances[collection.installment_number] = collection.remaining_balance;
+        installmentAmounts[collection.installment_number] = collection.collection_amount;
+        
+        const newRow: CollectionSheetRow = {
+          serialNo: originalRow.serialNo,
+          memberId: collection.member_id,
+          memberName: originalRow.memberName,
+          // Show ONLY the specific installment number for this collection (no grouping)
+          installment: `${collection.installment_number}${collection.is_completed ? 'c' : ''}`,
+          amount: collection.collection_amount.toString(),
+          // Only include balances for this specific installment
+          installmentBalances,
+          installmentAmounts,
+          id: collection.id,
+          isAdditionalRow,
+          parentMemberId: isAdditionalRow ? collection.member_id : undefined,
+          rowIndex: isAdditionalRow ? Date.now() + globalRowIndex : originalRow.rowIndex
+        };
+        
+        
+        newCollectionSheet.push(newRow);
+        globalRowIndex++;
+      });
+      
+      // Create a map of members who have collections for quick lookup
+      const membersWithCollections = new Set(existingCollections.map(c => c.member_id));
+      
+      // Add any members without collections (empty rows)
+      collectionSheet.value.forEach(originalRow => {
+        if (!membersWithCollections.has(originalRow.memberId)) {
+          newCollectionSheet.push({
+            ...originalRow,
+            installment: '',
+            amount: '',
+            installmentBalances: {},
+            installmentAmounts: {},
+            id: undefined
+          });
+        }
+      });
+      
+      // Sort the new collection sheet by serial number and then by additional row status
+      newCollectionSheet.sort((a, b) => {
+        if (a.serialNo !== b.serialNo) {
+          return a.serialNo - b.serialNo;
+        }
+        // For same member, show main row first, then additional rows
+        if (a.isAdditionalRow !== b.isAdditionalRow) {
+          return a.isAdditionalRow ? 1 : -1;
+        }
+        return 0;
+      });
+  
+      
+      // Replace the collection sheet with the new multi-row format
+      collectionSheet.value = newCollectionSheet;
     } else {
       // BEFORE SUBMISSION: Fetch incomplete balances from collection_balance table
       // This shows only unpaid installments in ascending order
@@ -287,6 +349,7 @@ async function loadExistingCollections() {
           return {
             ...row,
             installmentBalances,
+            installmentAmounts: {},
             // Clear amount and installment to allow fresh input
             amount: '',
             installment: ''
@@ -303,6 +366,11 @@ async function loadExistingCollections() {
     console.error('Error loading collection data:', error);
     showErrorNotification('Failed to load collection data');
   }
+}
+
+function saveOriginalState() {
+  // Create a deep copy of the current collection sheet to track changes
+  originalCollectionSheet.value = JSON.parse(JSON.stringify(collectionSheet.value));
 }
 
 async function getPreviousCollections(memberId: number): Promise<ExistingCollection[]> {
@@ -369,7 +437,10 @@ async function loadGroupMembers() {
       memberName: member.name,
       installment: '',
       amount: '',
-      installmentBalances: {}
+      installmentBalances: {},
+      installmentAmounts: {},
+      isAdditionalRow: false,
+      rowIndex: index
     }))
 
     try {
@@ -390,6 +461,48 @@ async function loadGroupMembers() {
     showSuccessNotification(`Loaded ${groupMembersFiltered.length} members for ${group.name}`);
   } catch (error) {
     showErrorNotification(`Failed to load members for group "${group.name}". Please try again.`);
+  }
+}
+
+async function clearCollectionData() {
+  try {
+    // If we're in after submission mode, we need to delete actual database records
+    if (isAfterSubmission.value && collection.value.date && collection.value.group_id) {
+      // Fetch existing collections for this date and group
+      const existingCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
+        collection.value.date,
+        Number(collection.value.group_id)
+      );
+      
+      // Delete all existing collections for this date and group
+      for (const existingCollection of existingCollections) {
+        await collectionsStore.deleteCollection(existingCollection.id, Number(collection.value.group_id));
+      }
+      
+      showSuccessNotification(`Deleted ${existingCollections.length} existing collections from database.`);
+    }
+    
+    // Clear all collection data for fresh start in frontend
+    collectionSheet.value = collectionSheet.value.map(row => ({
+      ...row,
+      amount: '',
+      installment: '',
+      id: undefined,
+      installmentAmounts: {}
+    }));
+    
+    // Reset submission state
+    isAfterSubmission.value = false;
+    submittedCollections.value = [];
+    
+    // Save the cleared state as original
+    saveOriginalState();
+    
+    showSuccessNotification('Collection data cleared completely. You can now enter fresh data.');
+    
+  } catch (error: any) {
+    console.error('Error clearing collection data:', error);
+    showErrorNotification(`Failed to clear collection data: ${error.message || 'Unknown error'}`);
   }
 }
 
@@ -421,14 +534,58 @@ function isMonthlySubscriptionComplete(row: CollectionSheetRow): boolean {
 async function handleAmountChange(row: CollectionSheetRow) {
   // The InstallmentCalculator component will handle the installment calculation automatically
   // This function is kept for backward compatibility and any additional processing needed
-  if (!row.amount || !selectedGroup.value) return;
+  if (!selectedGroup.value) return;
+  
+  // Check if amount contains comma-separated values and we have installments
+  if (row.amount.includes(',') && row.installment && !row.installment.includes(':')) {
+    // Parse comma-separated amounts with corresponding installments
+    const amounts = row.amount.split(',').map(a => parseFloat(a.trim())).filter(a => !isNaN(a))
+    const installments = row.installment.split(',').map(inst => {
+      const cleanInst = inst.trim().replace('c', '')
+      return parseInt(cleanInst)
+    }).filter(num => !isNaN(num))
+    
+    if (amounts.length === installments.length && amounts.length > 0) {
+      // Create specific installment amounts mapping
+      const installmentAmounts: { [key: number]: number } = {}
+      for (let i = 0; i < installments.length; i++) {
+        installmentAmounts[installments[i]] = amounts[i]
+      }
+      
+      // Update the row with specific amounts
+      row.installmentAmounts = installmentAmounts
+      
+      // Update the amount to be the total
+      const totalAmount = amounts.reduce((sum, amt) => sum + amt, 0)
+      row.amount = totalAmount.toString()
+      
+      // Convert installment format to specific amounts format that InstallmentCalculator understands
+      const specificFormat = installments.map((inst, i) => `${inst}:${amounts[i]}`).join(',')
+      row.installment = specificFormat
+      
+      
+      
+      return // Exit early since we've handled this case
+    }
+  }
   
   // Any additional validation or processing can be added here
   const amount = parseFloat(row.amount);
   if (isNaN(amount) || amount < 0) {
     row.amount = '';
+    row.installment = ''; // Clear installment when amount is invalid
     return;
   }
+  
+  // If user manually changes amount, clear specific installment amounts
+  // This allows the system to revert to auto-distribution mode
+  if (row.installmentAmounts && Object.keys(row.installmentAmounts).length > 0) {
+    row.installmentAmounts = {};
+  }
+  
+  // If amount is valid and > 0, the InstallmentCalculator component will auto-calculate
+  // installments based on the new amount value via its watchers
+  // No need to do anything else here as the component handles it automatically
 }
 
 function handleInstallmentChange(row: CollectionSheetRow) {
@@ -439,11 +596,56 @@ function handleInstallmentChange(row: CollectionSheetRow) {
   // Any additional validation can be added here
 }
 
-// Helper functions for tracking changes and selective updates
-// This system tracks the original state when data is loaded and only
-// submits changes for rows that have actually been modified by the user
-function saveOriginalState() {
-  originalCollectionSheet.value = JSON.parse(JSON.stringify(collectionSheet.value));
+function handleInstallmentAmountsUpdate(memberId: number, amounts: { [key: number]: number }) {
+  // Find the row for this member and update their installment amounts
+  const row = collectionSheet.value.find(r => r.memberId === memberId)
+  if (row) {
+    row.installmentAmounts = amounts
+    
+    // Update the total amount based on specific installment amounts
+    const totalAmount = Object.values(amounts).reduce((sum, amount) => sum + amount, 0)
+    if (totalAmount > 0) {
+      row.amount = totalAmount.toString()
+    }
+  }
+}
+
+function addDynamicRow(memberId: number) {
+  // Find the original member row
+  const originalRow = collectionSheet.value.find(r => r.memberId === memberId && !r.isAdditionalRow)
+  if (!originalRow) return
+  
+  // Create a new row for the same member
+  const newRowIndex = Date.now() // Use timestamp as unique index
+  const newRow: CollectionSheetRow = {
+    serialNo: originalRow.serialNo,
+    memberId: memberId,
+    memberName: originalRow.memberName,
+    installment: '',
+    amount: '',
+    installmentBalances: {},
+    installmentAmounts: {},
+    isAdditionalRow: true,
+    parentMemberId: memberId,
+    rowIndex: newRowIndex
+  }
+  
+  // Insert the new row after the last row for this member
+  const lastRowIndex = collectionSheet.value.findLastIndex(r => r.memberId === memberId)
+  if (lastRowIndex !== -1) {
+    collectionSheet.value.splice(lastRowIndex + 1, 0, newRow)
+  } else {
+    collectionSheet.value.push(newRow)
+  }
+  
+}
+
+function removeDynamicRow(rowIndex: number) {
+  // Find and remove the dynamic row with the given rowIndex
+  const index = collectionSheet.value.findIndex(r => r.rowIndex === rowIndex && r.isAdditionalRow)
+  if (index !== -1) {
+    collectionSheet.value.splice(index, 1)
+  }
 }
 
 function getChangedRows(): { 
@@ -456,7 +658,22 @@ function getChangedRows(): {
   const unchanged: CollectionSheetRow[] = [];
   
   for (const currentRow of collectionSheet.value) {
-    const originalRow = originalCollectionSheet.value.find(orig => orig.memberId === currentRow.memberId);
+    // For additional rows created during editing, find the original by matching member ID and row properties
+    let originalRow: CollectionSheetRow | undefined;
+    
+    if (currentRow.isAdditionalRow) {
+      // For additional rows, try to find a matching row by member ID and installment or rowIndex
+      originalRow = originalCollectionSheet.value.find(orig => 
+        orig.memberId === currentRow.memberId && 
+        (orig.rowIndex === currentRow.rowIndex || 
+         orig.installment === currentRow.installment)
+      );
+    } else {
+      // For main rows, find by member ID and ensure it's not an additional row
+      originalRow = originalCollectionSheet.value.find(orig => 
+        orig.memberId === currentRow.memberId && !orig.isAdditionalRow
+      );
+    }
     
     // If no original row exists, this is new data
     if (!originalRow) {
@@ -479,7 +696,8 @@ function getChangedRows(): {
     // Compare actual values for changes
     const amountChanged = originalRow.amount !== currentRow.amount;
     const installmentChanged = originalRow.installment !== currentRow.installment;
-    const hasChanges = amountChanged || installmentChanged;
+    const installmentAmountsChanged = JSON.stringify(originalRow.installmentAmounts || {}) !== JSON.stringify(currentRow.installmentAmounts || {});
+    const hasChanges = amountChanged || installmentChanged || installmentAmountsChanged;
     
     if (hadOriginalData && !hasCurrentData) {
       // Had data before, now doesn't - mark for deletion
@@ -493,17 +711,31 @@ function getChangedRows(): {
     }
   }
   
+  // Also check for deleted rows (rows that existed in original but not in current)
+  for (const originalRow of originalCollectionSheet.value) {
+    const currentRowExists = collectionSheet.value.find(curr => {
+      if (originalRow.isAdditionalRow) {
+        return curr.memberId === originalRow.memberId && 
+               (curr.rowIndex === originalRow.rowIndex || curr.installment === originalRow.installment);
+      } else {
+        return curr.memberId === originalRow.memberId && !curr.isAdditionalRow;
+      }
+    });
+    
+    if (!currentRowExists && originalRow.amount && !isNaN(parseFloat(originalRow.amount)) && 
+        originalRow.installment && parseFloat(originalRow.amount) > 0) {
+      // This row was deleted
+      toDelete.push({ ...originalRow });
+    }
+  }
+  
   return { toSave, toDelete, unchanged };
 }
 
 // Debug function to help test change tracking (can be removed later)
 function debugChanges() {
   const { toSave, toDelete, unchanged } = getChangedRows();
-  console.log('Debug Changes:', {
-    toSave: toSave.map(r => ({ memberId: r.memberId, name: r.memberName, amount: r.amount, installment: r.installment })),
-    toDelete: toDelete.map(r => ({ memberId: r.memberId, name: r.memberName, amount: r.amount, installment: r.installment })),
-    unchanged: unchanged.map(r => ({ memberId: r.memberId, name: r.memberName, amount: r.amount, installment: r.installment }))
-  });
+ 
   return { toSave, toDelete, unchanged };
 }
 
@@ -519,18 +751,17 @@ async function deleteSpecificCollections(memberCollections: ExistingCollection[]
 }
 
 async function handleSubmit() {
-  try {
-    errorMessage.value = '';
-    if (!collection.value.date || !collection.value.group_id) {
-      showErrorNotification('Please fill in all required fields');
-      return;
-    }
+  if (!validateForm()) {
+    return;
+  }
 
-    // Use change tracking to identify what actually changed
+  try {
     const { toSave, toDelete, unchanged } = getChangedRows();
+    
+ 
 
     if (toSave.length === 0 && toDelete.length === 0) {
-      showErrorNotification('No changes detected. Please make changes to collections before submitting.');
+      showErrorNotification('No changes detected. Please modify the collection data before saving.');
       return;
     }
 
@@ -539,7 +770,7 @@ async function handleSubmit() {
     // First, handle deletions for rows that had data but now don't
     for (const row of toDelete) {
       try {
-        // Only delete collections for this specific member that we know existed
+        // Only delete collections for this date and group that we know existed
         const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
           collection.value.date,
           Number(collection.value.group_id)
@@ -557,54 +788,94 @@ async function handleSubmit() {
 
     // Now handle saves/updates for only the changed rows
     for (const row of toSave) {
-      // The backend expects simple data: just the amount and starting installment
-      // It will automatically distribute the payment across installments
-      const installmentNumbers = row.installment.split(',').map(inst => {
-        const cleanInst = inst.replace('c', '');
-        return parseInt(cleanInst);
-      }).filter(num => !isNaN(num));
-
-      // Use the first (lowest) installment number as the starting point
-      const startingInstallmentNumber = Math.min(...installmentNumbers) || 1;
-
-      const payload = {
-        group_id: Number(collection.value.group_id),
-        member_id: row.memberId,
-        installment_number: startingInstallmentNumber,
-        collection_amount: parseFloat(row.amount),
-        date: collection.value.date
-      };
-
       try {
-        // For updates, we need to handle existing data more carefully
-        if (row.id) {
-          // This row had existing data - delete only this member's collections for this date
-          const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
-            collection.value.date,
-            Number(collection.value.group_id)
-          );
-          const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId);
-          
-          // Delete existing collections for this member
-          if (memberOldCollections.length > 0) {
-            await deleteSpecificCollections(memberOldCollections);
-            // Wait a bit to ensure deletions complete
-            await new Promise(resolve => setTimeout(resolve, 300));
+        // Check if this row has specific installment amounts
+        if (row.installmentAmounts && Object.keys(row.installmentAmounts).length > 0) {
+          // Handle specific installment amounts (e.g., 3:3400,4:5500)
+          for (const [installmentStr, amount] of Object.entries(row.installmentAmounts)) {
+            const installmentNumber = parseInt(installmentStr)
+            
+            const payload = {
+              group_id: Number(collection.value.group_id),
+              member_id: row.memberId,
+              installment_number: installmentNumber,
+              collection_amount: amount,
+              date: collection.value.date,
+              allow_excess: true // Backend should handle excess amounts
+            }
+
+            // For updates, delete existing collection for this specific installment
+            if (row.id) {
+              const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
+                collection.value.date,
+                Number(collection.value.group_id)
+              )
+              const specificOldCollection = oldCollections.find((c: any) => 
+                c.member_id === row.memberId && c.installment_number === installmentNumber
+              )
+              
+              if (specificOldCollection) {
+                await collectionsStore.deleteCollection(specificOldCollection.id, Number(collection.value.group_id))
+                await new Promise(resolve => setTimeout(resolve, 200))
+              }
+            }
+            
+            // Create the new collection for this specific installment
+            await collectionsStore.createCollection(payload)
           }
+        } else {
+          // Handle traditional auto-distribution format
+          const installmentNumbers = row.installment.split(',').map(inst => {
+            const cleanInst = inst.replace('c', '')
+            return parseInt(cleanInst)
+          }).filter(num => !isNaN(num))
+
+          // Check if this is a single installment with 'c' suffix (excess should stay in that installment)
+          const isSingleInstallmentWithC = row.installment.includes('c') && installmentNumbers.length === 1
+          const isManualSpecification = isSingleInstallmentWithC // Use allow_excess for single installment with 'c'
+          
+          // Use the first (lowest) installment number as the starting point
+          const startingInstallmentNumber = Math.min(...installmentNumbers) || 1
+
+          const payload = {
+            group_id: Number(collection.value.group_id),
+            member_id: row.memberId,
+            installment_number: startingInstallmentNumber,
+            collection_amount: parseFloat(row.amount),
+            date: collection.value.date,
+            allow_excess: isManualSpecification // Set allow_excess for single installment with 'c'
+          }
+
+          // For updates, we need to handle existing data more carefully
+          if (row.id) {
+            // This row had existing data - delete only this member's collections for this date
+            const oldCollections = await collectionsStore.fetchCollectionsByDateAndGroup(
+              collection.value.date,
+              Number(collection.value.group_id)
+            )
+            const memberOldCollections = oldCollections.filter((c: any) => c.member_id === row.memberId)
+            
+            // Delete existing collections for this member
+            if (memberOldCollections.length > 0) {
+              await deleteSpecificCollections(memberOldCollections)
+              // Wait a bit to ensure deletions complete
+              await new Promise(resolve => setTimeout(resolve, 300))
+            }
+          }
+          
+          // Create the new collection - backend will handle installment distribution
+          await collectionsStore.createCollection(payload)
         }
         
-        // Create the new collection - backend will handle installment distribution
-        await collectionsStore.createCollection(payload);
-        
       } catch (error: any) {
-        hasError = true;
-        console.error('Error saving collection for member:', row.memberId, error);
-        const errorDetails = error.response?.data?.details || error.message || 'Unknown error';
-        showErrorNotification(`Failed to save collection for member ID ${row.memberId}: ${errorDetails}`);
+        hasError = true
+        console.error('Error saving collection for member:', row.memberId, error)
+        const errorDetails = error.response?.data?.details || error.message || 'Unknown error'
+        showErrorNotification(`Failed to save collection for member ID ${row.memberId}: ${errorDetails}`)
         
         // If it's a unique constraint error, try a different approach
         if (errorDetails.includes('UNIQUE constraint failed')) {
-          console.warn('Unique constraint violation detected, this suggests the record may already exist');
+          console.warn('Unique constraint violation detected, this suggests the record may already exist')
         }
       }
     }
@@ -720,7 +991,8 @@ watch([
           ...row,
           amount: '',
           installment: '',
-          id: undefined
+          id: undefined,
+          installmentAmounts: {}
         }));
         saveOriginalState();
       }
@@ -788,7 +1060,7 @@ onMounted(() => {
               <span>→</span>
             </button>
           </div>
-          <small class="date-help-text">Enter date as dd/mm/yyyy, use arrows, or click calendar</small>
+
           
           <!-- Calendar Widget -->
           <div v-if="showCalendar" class="calendar-widget">
@@ -861,26 +1133,20 @@ onMounted(() => {
         <p><strong>Selected Group:</strong> {{ selectedGroup?.name || 'Loading...' }}</p>
         <p><strong>Members in Collection Sheet:</strong> {{ collectionSheet.length }}</p>
         <p><strong>Total Members for Group:</strong> {{ groupMembers.length }}</p>
-        <p v-if="collection.date && collectionSheet.length === 0" class="next-action-hint">
-          <strong>💡 Tip:</strong> Collection sheet cleared after save. Click "Load Members" to start a new collection or use date navigation to move to another date.
-        </p>
-      </div>
-      
-      <!-- Show helpful message when collection is saved and sheet is cleared -->
-      <div v-if="collection.group_id && collection.date && collectionSheet.length === 0 && selectedGroup" class="saved-state-info">
-        <div class="saved-state-content">
-          <h4>✅ Ready for Next Collection</h4>
-          <p>Group: <strong>{{ selectedGroup.name }}</strong></p>
-          <p>Current Date: <strong>{{ formatDateForDisplay(collection.date) }}</strong></p>
-          <div class="next-steps">
-            <p><strong>What's next?</strong></p>
-            <ul>
-              <li>Use the date arrows (← →) to move to another date</li>
-              <li>Click "Load Members" to start a new collection for this date</li>
-              <li>Or select a different group to work with</li>
-            </ul>
-          </div>
+        <div v-if="isAfterSubmission" class="submission-status">
+          <p><strong>📊 Editing Mode:</strong> You are viewing/editing previously submitted collections for {{ formatDateForDisplay(collection.date) }}</p>
+          <p><strong>💡 Note:</strong> You can modify amounts and installments. Changes will update the existing records.</p>
+          <button 
+            type="button" 
+            @click="clearCollectionData" 
+            class="clear-data-button"
+            title="Clear all data for this date to start fresh"
+          >
+            🗑️ Clear All Data
+          </button>
         </div>
+
+
       </div>
       
       <CollectionSheetTable
@@ -893,6 +1159,9 @@ onMounted(() => {
         :isMonthlySubscriptionComplete="isMonthlySubscriptionComplete"
         :isAfterSubmission="isAfterSubmission"
         :submittedCollections="submittedCollections"
+        @updateInstallmentAmounts="handleInstallmentAmountsUpdate"
+        @addDynamicRow="addDynamicRow"
+        @removeDynamicRow="removeDynamicRow"
       />
       <div v-if="collectionSheet && collectionSheet.length > 0" class="total-collected-amount">
         <b>Total Collected Amount:</b> ₹{{ totalCollectedAmount.toLocaleString() }}
@@ -1067,62 +1336,44 @@ input:focus, select:focus {
   margin-bottom: 0;
 }
 
-.next-action-hint {
+.submission-status {
+  margin: 1rem 0;
+  padding: 1rem;
   background: #fff3cd;
   border: 1px solid #ffeaa7;
   border-radius: 4px;
-  padding: 0.75rem;
-  margin-top: 0.5rem;
-  color: #856404;
-  font-size: 0.85rem;
+  border-left: 4px solid #f39c12;
 }
 
-.saved-state-info {
-  background: linear-gradient(135deg, #f8fff8 0%, #e8f5e8 100%);
-  border: 2px solid #4caf50;
-  border-radius: 8px;
-  padding: 1.5rem;
-  margin: 1.5rem 0;
-  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.1);
-}
-
-.saved-state-content h4 {
-  margin: 0 0 1rem 0;
-  color: #2e7d32;
-  font-size: 1.2rem;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.saved-state-content p {
+.submission-status p {
   margin: 0.5rem 0;
-  color: #2c3e50;
-  font-size: 0.95rem;
-}
-
-.next-steps {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid #c8e6c9;
-}
-
-.next-steps p {
-  margin: 0 0 0.5rem 0;
-  font-weight: 600;
-  color: #2e7d32;
-}
-
-.next-steps ul {
-  margin: 0.5rem 0 0 0;
-  padding-left: 1.2rem;
-  color: #2c3e50;
-}
-
-.next-steps li {
-  margin: 0.3rem 0;
+  color: #856404;
   font-size: 0.9rem;
 }
+
+.clear-data-button {
+  padding: 0.75rem 1.5rem;
+  background-color: #e74c3c;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-top: 1rem;
+  transition: all 0.2s;
+  box-shadow: 0 2px 4px rgba(231, 76, 60, 0.2);
+}
+
+.clear-data-button:hover {
+  background-color: #c0392b;
+  box-shadow: 0 4px 8px rgba(231, 76, 60, 0.3);
+  transform: translateY(-1px);
+}
+
+
+
+
 
 .collection-sheet {
   margin-top: 2rem;
@@ -1308,13 +1559,7 @@ td input.completed {
   height: 1px;
 }
 
-.date-help-text {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.875rem;
-  color: #6c757d;
-  font-style: italic;
-}
+
 
 /* Calendar Widget Styles */
 .calendar-widget {
@@ -1445,10 +1690,6 @@ td input.completed {
   cursor: pointer;
   font-size: 0.9rem;
   transition: background-color 0.2s;
-}
-
-.calendar-close-button:hover {
-  background: #7f8c8d;
 }
 
 /* Adjust form-group to accommodate the help text and calendar */

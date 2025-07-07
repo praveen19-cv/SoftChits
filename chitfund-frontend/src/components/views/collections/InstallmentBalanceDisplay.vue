@@ -11,9 +11,21 @@
         <span class="arrow">→</span>
         <span 
           class="updated-balance"
-          :class="{ 'completed': balance.updatedBalance <= 0, 'partial': balance.updatedBalance > 0 && balance.updatedBalance < balance.originalBalance }"
+          :class="{ 
+            'completed': balance.status === 'completed', 
+            'partial': balance.status === 'pending',
+            'excess': balance.status === 'excess'
+          }"
         >
-          ₹{{ balance.updatedBalance.toLocaleString() }}
+          <template v-if="balance.status === 'excess'">
+            ₹0 (+₹{{ Math.abs(balance.updatedBalance).toLocaleString() }} excess)
+          </template>
+          <template v-else>
+            ₹{{ Math.abs(balance.updatedBalance).toLocaleString() }}
+          </template>
+        </span>
+        <span class="status-indicator" :class="`status-${balance.status}`">
+          {{ balance.status }}
         </span>
       </div>
     </div>
@@ -29,12 +41,13 @@ import type { CollectionBalance } from '@/stores/CollectionsStore'
 
 interface Props {
   memberId: number
-  installmentNumbers: string // e.g., "1c,2,3"
+  installmentNumbers: string // e.g., "1c,2,3" or "3:3400,4:5500"
   collectionAmount: number
   memberBalances: CollectionBalance[]
   monthlySubscription: number
   isAfterSubmission?: boolean // New prop to indicate data source
   submittedCollections?: any[] // Collection records after submission
+  installmentAmounts?: { [key: number]: number } // Specific amounts per installment
 }
 
 interface BalanceDisplay {
@@ -42,6 +55,8 @@ interface BalanceDisplay {
   originalBalance: number
   updatedBalance: number
   isCompleted: boolean
+  status: 'pending' | 'completed' | 'excess'
+  collectionAmount?: number
 }
 
 const props = defineProps<Props>()
@@ -51,30 +66,81 @@ const displayBalances = computed((): BalanceDisplay[] => {
     return []
   }
 
-  // Parse installment numbers from string like "1c,2,3"
-  const installmentNums = props.installmentNumbers
-    .split(',')
-    .map(inst => {
-      const cleanInst = inst.trim().replace('c', '')
-      return parseInt(cleanInst)
-    })
-    .filter(num => !isNaN(num))
-    .sort((a, b) => a - b)
-
-  if (installmentNums.length === 0) {
+  // Parse installment numbers from string like "1c,2,3" or "3:3400,4:5500"
+  const parseResult = parseInstallmentString(props.installmentNumbers)
+  
+  if (parseResult.installments.length === 0) {
     return []
   }
 
   if (props.isAfterSubmission && props.submittedCollections) {
     // After submission: Use collection table data
-    return getBalancesFromCollectionData(installmentNums)
+    return getBalancesFromCollectionData(parseResult)
   } else {
     // Before submission: Use collection_balance table data
-    return getBalancesFromBalanceData(installmentNums)
+    return getBalancesFromBalanceData(parseResult)
   }
 })
 
-function getBalancesFromBalanceData(installmentNums: number[]): BalanceDisplay[] {
+function parseInstallmentString(input: string): { 
+  installments: number[], 
+  specificAmounts: { [key: number]: number },
+  hasSpecificAmounts: boolean 
+} {
+  const installments: number[] = []
+  const specificAmounts: { [key: number]: number } = {}
+  let hasSpecificAmounts = false
+
+  if (input.includes(':')) {
+    // Format: "3:3400,4:5500"
+    hasSpecificAmounts = true
+    const parts = input.split(',').map(part => part.trim())
+    
+    for (const part of parts) {
+      if (part.includes(':')) {
+        const [instStr, amountStr] = part.split(':')
+        const instNum = parseInt(instStr.trim())
+        const amount = parseFloat(amountStr.trim())
+        
+        if (!isNaN(instNum) && !isNaN(amount)) {
+          installments.push(instNum)
+          specificAmounts[instNum] = amount
+        }
+      }
+    }
+  } else {
+    // Regular format: "1c,2,3"
+    const parts = input.split(',').map(inst => {
+      const cleanInst = inst.trim().replace('c', '')
+      return parseInt(cleanInst)
+    }).filter(num => !isNaN(num))
+    
+    installments.push(...parts)
+  }
+
+  return {
+    installments: installments.sort((a, b) => a - b),
+    specificAmounts,
+    hasSpecificAmounts
+  }
+}
+
+function getStatus(originalBalance: number, updatedBalance: number, collectionAmount: number): 'pending' | 'completed' | 'excess' {
+  if (updatedBalance < 0) {
+    // Negative balance means excess payment
+    return 'excess'
+  } else if (updatedBalance === 0) {
+    return 'completed'
+  } else {
+    return 'pending'
+  }
+}
+
+function getBalancesFromBalanceData(parseResult: { 
+  installments: number[], 
+  specificAmounts: { [key: number]: number },
+  hasSpecificAmounts: boolean 
+}): BalanceDisplay[] {
   const memberBalances = props.memberBalances
     .filter(b => b.member_id === props.memberId)
     .sort((a, b) => a.installment_number - b.installment_number)
@@ -82,42 +148,98 @@ function getBalancesFromBalanceData(installmentNums: number[]): BalanceDisplay[]
   const results: BalanceDisplay[] = []
   let remainingAmount = props.collectionAmount
 
-  for (const instNum of installmentNums) {
+  // Check if we have manually specified installments
+  // Treat as manual if:
+  // 1. Has specific amounts (with :) OR
+  // 2. Single installment with 'c' suffix (e.g., "2c")
+  const isSingleInstallmentWithC = props.installmentNumbers.includes('c') && parseResult.installments.length === 1
+  const hasManualInstallments = parseResult.hasSpecificAmounts || isSingleInstallmentWithC
+  
+  for (const instNum of parseResult.installments) {
     const balance = memberBalances.find(b => b.installment_number === instNum)
+    const specificAmount = parseResult.specificAmounts[instNum]
     
     if (balance) {
       // Use the actual remaining balance from the database for this specific installment
       const originalBalance = balance.remaining_balance
       let updatedBalance = originalBalance
+      let collectionAmount = 0
 
-      if (remainingAmount > 0 && originalBalance > 0) {
-        const payAmount = Math.min(remainingAmount, originalBalance)
-        updatedBalance = originalBalance - payAmount
-        remainingAmount -= payAmount
+      if (parseResult.hasSpecificAmounts && specificAmount !== undefined) {
+        // Use specific amount for this installment - apply exactly what user specified
+        collectionAmount = specificAmount
+        updatedBalance = Math.round(originalBalance - collectionAmount)
+      } else if (isSingleInstallmentWithC) {
+        // Single installment with 'c' - apply ALL amount to this installment (allow excess)
+        collectionAmount = props.collectionAmount
+        updatedBalance = Math.round(originalBalance - collectionAmount)
+        console.log(`Single installment with C (${instNum}): original=${originalBalance}, collection=${collectionAmount}, updated=${updatedBalance}`)
+      } else if (hasManualInstallments) {
+        // Multiple installments specified - distribute proportionally based on remaining balance
+        const totalOriginalBalance = parseResult.installments.reduce((sum, instNum) => {
+          const bal = memberBalances.find(b => b.installment_number === instNum)
+          return sum + (bal ? bal.remaining_balance : props.monthlySubscription)
+        }, 0)
+        
+        if (totalOriginalBalance > 0) {
+          collectionAmount = Math.round((originalBalance / totalOriginalBalance) * props.collectionAmount)
+        } else {
+          collectionAmount = Math.round(props.collectionAmount / parseResult.installments.length)
+        }
+        updatedBalance = Math.round(originalBalance - collectionAmount)
+      } else if (remainingAmount > 0) {
+        // Auto-distribute amount (sequential distribution)
+        if (originalBalance > 0) {
+          collectionAmount = Math.min(remainingAmount, originalBalance)
+          updatedBalance = Math.round(originalBalance - collectionAmount)
+          remainingAmount -= collectionAmount
+        }
       }
+
+      const status = getStatus(originalBalance, updatedBalance, collectionAmount)
 
       results.push({
         installmentNumber: instNum,
         originalBalance,
         updatedBalance,
-        isCompleted: updatedBalance <= 0
+        isCompleted: updatedBalance <= 0,
+        status,
+        collectionAmount
       })
     } else {
       // If no balance record exists, assume monthly subscription amount
       const originalBalance = props.monthlySubscription
       let updatedBalance = originalBalance
+      let collectionAmount = 0
 
-      if (remainingAmount > 0) {
-        const payAmount = Math.min(remainingAmount, originalBalance)
-        updatedBalance = originalBalance - payAmount
-        remainingAmount -= payAmount
+      if (parseResult.hasSpecificAmounts && specificAmount !== undefined) {
+        // Use specific amount for this installment
+        collectionAmount = specificAmount
+        updatedBalance = Math.round(originalBalance - collectionAmount)
+      } else if (hasManualInstallments) {
+        // Manual installments: distribute amount
+        if (parseResult.installments.length === 1) {
+          collectionAmount = props.collectionAmount
+        } else {
+          collectionAmount = Math.round(props.collectionAmount / parseResult.installments.length)
+        }
+        updatedBalance = Math.round(originalBalance - collectionAmount)
+      } else if (remainingAmount > 0) {
+        // Auto-distribute amount
+        collectionAmount = Math.min(remainingAmount, originalBalance)
+        updatedBalance = Math.round(originalBalance - collectionAmount)
+        remainingAmount -= collectionAmount
       }
+
+      const status = getStatus(originalBalance, updatedBalance, collectionAmount)
 
       results.push({
         installmentNumber: instNum,
         originalBalance,
         updatedBalance,
-        isCompleted: updatedBalance <= 0
+        isCompleted: updatedBalance <= 0,
+        status,
+        collectionAmount
       })
     }
   }
@@ -125,11 +247,15 @@ function getBalancesFromBalanceData(installmentNums: number[]): BalanceDisplay[]
   return results
 }
 
-function getBalancesFromCollectionData(installmentNums: number[]): BalanceDisplay[] {
+function getBalancesFromCollectionData(parseResult: { 
+  installments: number[], 
+  specificAmounts: { [key: number]: number },
+  hasSpecificAmounts: boolean 
+}): BalanceDisplay[] {
   const results: BalanceDisplay[] = []
   const memberCollections = props.submittedCollections?.filter(c => c.member_id === props.memberId) || []
 
-  for (const instNum of installmentNums) {
+  for (const instNum of parseResult.installments) {
     const collection = memberCollections.find(c => c.installment_number === instNum)
     
     if (collection) {
@@ -138,21 +264,29 @@ function getBalancesFromCollectionData(installmentNums: number[]): BalanceDispla
       // - updatedBalance is the updated_remaining_balance (what's owed after payment)
       const originalBalance = collection.remaining_balance
       const updatedBalance = collection.updated_remaining_balance || (collection.remaining_balance - collection.collection_amount)
+      const collectionAmount = collection.collection_amount
+      const status = getStatus(originalBalance, updatedBalance, collectionAmount)
 
       results.push({
         installmentNumber: instNum,
         originalBalance,
         updatedBalance,
-        isCompleted: collection.is_completed || updatedBalance <= 0
+        isCompleted: collection.is_completed || updatedBalance <= 0,
+        status,
+        collectionAmount
       })
     } else {
       // No collection record for this installment
       const originalBalance = props.monthlySubscription
+      const status = 'pending'
+
       results.push({
         installmentNumber: instNum,
         originalBalance,
         updatedBalance: originalBalance,
-        isCompleted: false
+        isCompleted: false,
+        status,
+        collectionAmount: 0
       })
     }
   }
@@ -215,6 +349,39 @@ function getBalancesFromCollectionData(installmentNums: number[]): BalanceDispla
   color: #f39c12;
 }
 
+.updated-balance.excess {
+  color: #8e44ad;
+  font-weight: 700;
+}
+
+.status-indicator {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  margin-left: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-pending {
+  background-color: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeaa7;
+}
+
+.status-completed {
+  background-color: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.status-excess {
+  background-color: #e2d1f3;
+  color: #6f42c1;
+  border: 1px solid #d1b3ff;
+}
+
 .no-data {
   display: flex;
   align-items: center;
@@ -238,6 +405,12 @@ function getBalancesFromCollectionData(installmentNums: number[]): BalanceDispla
   
   .balance-values {
     align-self: flex-end;
+    flex-wrap: wrap;
+  }
+  
+  .status-indicator {
+    font-size: 0.65rem;
+    padding: 0.1rem 0.3rem;
   }
 }
 </style>

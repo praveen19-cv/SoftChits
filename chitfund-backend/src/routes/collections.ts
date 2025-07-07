@@ -241,9 +241,8 @@ router.get('/:groupId/balances', async (req, res) => {
 router.post('/', async (req, res) => {
   const db = getWriteDb();
   try {
-    const { group_id, member_id, collection_date, installment_number, collection_amount } = req.body;
-    
-    
+    const { group_id, member_id, collection_date, installment_number, collection_amount, allow_excess } = req.body;
+
     const groupId = parseInt(group_id, 10);
     const memberId = parseInt(member_id, 10);
     let installmentNum = parseInt(installment_number, 10);
@@ -279,40 +278,40 @@ router.post('/', async (req, res) => {
     let remainingAmount = amount;
     let currentInstallment = installmentNum;
     let affectedInstallments: {installment: number, paid: number}[] = [];
+    
     await executeTransaction(db, () => {
-      while (remainingAmount > 0) {
-        // Get the current balance for this installment
+      // If allow_excess is true, apply the full amount to the specific installment only (no auto-distribution)
+      if (allow_excess) {
+        // Get the current balance for this specific installment
         const currentBalance = db.prepare(`
           SELECT remaining_balance, total_paid, is_completed
           FROM ${balanceTableName}
           WHERE group_id = ? AND member_id = ? AND installment_number = ?
         `).get(groupId, memberId, currentInstallment) as { remaining_balance: number; total_paid: number; is_completed: number } | undefined;
+
         if (!currentBalance) {
-          console.log(`Stopping: no balance found for installment ${currentInstallment}`);
-          // If no more installments, stop
-          break;
+          console.log(`No balance found for installment ${currentInstallment}`);
+          return;
         }
-        
-        if (currentBalance.is_completed) {
-          console.log(`Skipping completed installment ${currentInstallment}, moving to next`);
-          // Skip completed installments and continue to next
-          currentInstallment++;
-          continue;
-        }
-        const payAmount = Math.min(remainingAmount, currentBalance.remaining_balance);
+
+        // Apply the full amount to this installment only, even if it creates excess
+        // The excess amount stays with this installment as negative remaining_balance
+        const payAmount = amount;
         const newRemainingBalance = currentBalance.remaining_balance - payAmount;
-        const isCompleted = newRemainingBalance <= 0 ? 1 : 0;
+        // Mark as completed if the amount paid is >= the remaining balance
+        const isCompleted = payAmount >= currentBalance.remaining_balance ? 1 : 0;
+
         // Check if a collection already exists for this combination
         const existingCollection = db.prepare(`
-          SELECT id FROM ${collectionTableName}
+          SELECT id, collection_amount FROM ${collectionTableName}
           WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
-        `).get(groupId, memberId, currentInstallment, collection_date) as { id: number } | undefined;
-        
+        `).get(groupId, memberId, currentInstallment, collection_date) as { id: number; collection_amount: number } | undefined;
+
         if (existingCollection) {
           // Update existing collection instead of inserting
           db.prepare(`
             UPDATE ${collectionTableName}
-            SET collection_amount = collection_amount + ?,
+            SET collection_amount = ?,
                 updated_remaining_balance = ?,
                 is_completed = ?
             WHERE id = ?
@@ -335,40 +334,146 @@ router.post('/', async (req, res) => {
             newRemainingBalance
           );
         }
-        // If remaining_balance is now 0, update is_completed to 1 for this row
-        if (newRemainingBalance === 0) {
+
+        // Update collection balance
+        if (existingCollection) {
+          // For existing collections, we need to adjust the total_paid correctly
+          const oldAmount = existingCollection.collection_amount;
+          const newTotalPaid = currentBalance.total_paid - oldAmount + payAmount;
+          
           db.prepare(`
-            UPDATE ${collectionTableName}
-            SET is_completed = 1
-            WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
+            UPDATE ${balanceTableName}
+            SET total_paid = ?,
+                remaining_balance = ?,
+                is_completed = ?,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE group_id = ? AND member_id = ? AND installment_number = ?
           `).run(
+            newTotalPaid,
+            newRemainingBalance,
+            isCompleted,
             groupId,
             memberId,
-            currentInstallment,
-            collection_date
+            currentInstallment
+          );
+        } else {
+          // For new collections, just add the amount
+          db.prepare(`
+            UPDATE ${balanceTableName}
+            SET total_paid = total_paid + ?,
+                remaining_balance = ?,
+                is_completed = ?,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE group_id = ? AND member_id = ? AND installment_number = ?
+          `).run(
+            payAmount,
+            newRemainingBalance,
+            isCompleted,
+            groupId,
+            memberId,
+            currentInstallment
           );
         }
-        // Update collection balance
-        db.prepare(`
-          UPDATE ${balanceTableName}
-          SET total_paid = total_paid + ?,
-              remaining_balance = ?,
-              is_completed = ?,
-              last_updated = CURRENT_TIMESTAMP
-          WHERE group_id = ? AND member_id = ? AND installment_number = ?
-        `).run(
-          payAmount,
-          newRemainingBalance,
-          isCompleted,
-          groupId,
-          memberId,
-          currentInstallment
-        );
-        affectedInstallments.push({installment: currentInstallment, paid: payAmount});
-        remainingAmount -= payAmount;
-        currentInstallment++;
-      }
 
+        affectedInstallments.push({installment: currentInstallment, paid: payAmount});
+        remainingAmount = 0; // All amount applied to this specific installment ONLY
+      } else {
+        // Original sequential distribution logic
+        while (remainingAmount > 0) {
+          // Get the current balance for this installment
+          const currentBalance = db.prepare(`
+            SELECT remaining_balance, total_paid, is_completed
+            FROM ${balanceTableName}
+            WHERE group_id = ? AND member_id = ? AND installment_number = ?
+          `).get(groupId, memberId, currentInstallment) as { remaining_balance: number; total_paid: number; is_completed: number } | undefined;
+          
+          if (!currentBalance) {
+            console.log(`Stopping: no balance found for installment ${currentInstallment}`);
+            // If no more installments, stop
+            break;
+          }
+          
+          if (currentBalance.is_completed) {
+            console.log(`Skipping completed installment ${currentInstallment}, moving to next`);
+            // Skip completed installments and continue to next
+            currentInstallment++;
+            continue;
+          }
+          
+          const payAmount = Math.min(remainingAmount, currentBalance.remaining_balance);
+          const newRemainingBalance = currentBalance.remaining_balance - payAmount;
+          const isCompleted = newRemainingBalance <= 0 ? 1 : 0;
+          
+          // Check if a collection already exists for this combination
+          const existingCollection = db.prepare(`
+            SELECT id FROM ${collectionTableName}
+            WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
+          `).get(groupId, memberId, currentInstallment, collection_date) as { id: number } | undefined;
+          
+          if (existingCollection) {
+            // Update existing collection instead of inserting
+            db.prepare(`
+              UPDATE ${collectionTableName}
+              SET collection_amount = collection_amount + ?,
+                  updated_remaining_balance = ?,
+                  is_completed = ?
+              WHERE id = ?
+            `).run(payAmount, newRemainingBalance, isCompleted, existingCollection.id);
+          } else {
+            // Insert new collection record
+            db.prepare(`
+              INSERT INTO ${collectionTableName} (
+                collection_date, group_id, member_id, installment_number, 
+                collection_amount, remaining_balance, is_completed, updated_remaining_balance
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              collection_date,
+              groupId,
+              memberId,
+              currentInstallment,
+              payAmount,
+              currentBalance.remaining_balance,
+              currentBalance.is_completed ? 1 : 0,
+              newRemainingBalance
+            );
+          }
+          
+          // If remaining_balance is now 0, update is_completed to 1 for this row
+          if (newRemainingBalance === 0) {
+            db.prepare(`
+              UPDATE ${collectionTableName}
+              SET is_completed = 1
+              WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
+            `).run(
+              groupId,
+              memberId,
+              currentInstallment,
+              collection_date
+            );
+          }
+          
+          // Update collection balance
+          db.prepare(`
+            UPDATE ${balanceTableName}
+            SET total_paid = total_paid + ?,
+                remaining_balance = ?,
+                is_completed = ?,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE group_id = ? AND member_id = ? AND installment_number = ?
+          `).run(
+            payAmount,
+            newRemainingBalance,
+            isCompleted,
+            groupId,
+            memberId,
+            currentInstallment
+          );
+          
+          affectedInstallments.push({installment: currentInstallment, paid: payAmount});
+          remainingAmount -= payAmount;
+          currentInstallment++;
+        }
+      }
     });
     // Get all balances for this member to show breakup
     const memberBalances = await withRetry(() =>

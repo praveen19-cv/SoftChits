@@ -104,8 +104,8 @@
                   <td>₹{{ installment.subscriptionAmount.toLocaleString() }}</td>
                   <td>₹{{ installment.totalPaid.toLocaleString() }}</td>
                   <td>
-                    <span :class="['status', installment.isCompleted ? 'completed' : 'pending']">
-                      {{ installment.isCompleted ? 'Completed' : 'Pending' }}
+                    <span :class="['status', getInstallmentStatusClass(installment)]">
+                      {{ getInstallmentStatusText(installment) }}
                     </span>
                   </td>
                   <td>₹{{ installment.pendingBalance.toLocaleString() }}</td>
@@ -130,8 +130,8 @@
                             <td>{{ transaction.collection_date ? (new Date(transaction.collection_date).toLocaleDateString('en-GB')) : '-' }}</td>
                             <td>₹{{ (transaction.collection_amount || 0).toLocaleString() }}</td>
                             <td>
-                              <span :class="['status', transaction.is_completed ? 'completed' : 'pending']">
-                                {{ transaction.is_completed ? 'Completed' : 'Pending' }}
+                              <span :class="['status', getTransactionStatusClass(transaction)]">
+                                {{ getTransactionStatusText(transaction) }}
                               </span>
                             </td>
                             <td>₹{{ (transaction.updated_remaining_balance || 0).toLocaleString() }}</td>
@@ -196,9 +196,11 @@ const groups = ref<{ id: number; name: string; start_date?: string; total_amount
 const customerDropdownOpen = ref(false)
 const groupDropdownOpen = ref(false)
 
-// Computed property to organize collections by installment using collection_balance data
+// Computed property to organize collections by installment
 const installmentData = computed(() => {
-  if (!collections.value.length || !selectedGroupId.value || !collectionBalances.value.length) return []
+  if (!collections.value.length || !selectedGroupId.value) return []
+  
+  console.log('Building installment data from collections:', collections.value.length)
   
   // Group collections by installment number
   const installmentMap = new Map<number, any[]>()
@@ -216,46 +218,78 @@ const installmentData = computed(() => {
     installmentMap.get(instNum)!.push(collection)
   })
   
-  // Sort transactions within each installment by created_at ascending (oldest created first)
+  // Sort transactions within each installment by collection_date descending (most recent first)
   installmentMap.forEach((transactions, installmentNumber) => {
     transactions.sort((a, b) => {
-      return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+      // First sort by collection_date (most recent first), then by created_at if dates are the same
+      const dateA = new Date(a.collection_date || a.created_at || 0)
+      const dateB = new Date(b.collection_date || b.created_at || 0)
+      return dateB.getTime() - dateA.getTime()
     })
   })
   
-  // Convert to array of installment data using collection_balance information
+  // Get selected group info for subscription amount calculation
+  const selectedGroup = groups.value.find(g => g.id === selectedGroupId.value)
+  const defaultSubscriptionAmount = selectedGroup?.total_amount && selectedGroup?.member_count
+    ? selectedGroup.total_amount / selectedGroup.member_count
+    : 10000
+  
+  console.log('Selected group for subscription calculation:', {
+    groupId: selectedGroupId.value,
+    groupName: selectedGroup?.name,
+    totalAmount: selectedGroup?.total_amount,
+    memberCount: selectedGroup?.member_count,
+    calculatedSubscription: defaultSubscriptionAmount
+  })
+  
+  // Convert to array of installment data
   const result = Array.from(installmentMap.entries()).map(([installmentNumber, transactions]) => {
-    // Find the corresponding balance record for this installment
-    const balanceRecord = collectionBalances.value.find(b => b.installment_number === installmentNumber)
+    // Calculate totals for this installment
+    const totalPaid = transactions.reduce((sum, t) => sum + (t.collection_amount || 0), 0)
     
-    if (balanceRecord) {
-      // Use actual data from collection_balance table
-      return {
-        installmentNumber,
-        subscriptionAmount: balanceRecord.total_paid + balanceRecord.remaining_balance, // Original subscription amount
-        totalPaid: balanceRecord.total_paid,
-        pendingBalance: balanceRecord.remaining_balance,
-        isCompleted: balanceRecord.is_completed,
-        transactions: transactions // Sorted by created_at ascending (oldest created first)
-      }
-    } else {
-      // Fallback calculation if no balance record found
-      const totalPaid = transactions.reduce((sum, t) => sum + (t.collection_amount || 0), 0)
-      const selectedGroup = groups.value.find(g => g.id === selectedGroupId.value)
-      const subscriptionAmount = selectedGroup?.total_amount && selectedGroup?.member_count
-        ? selectedGroup.total_amount / selectedGroup.member_count
-        : 10000
+    // Find the transaction with the latest collection_date to get the most current remaining balance
+    const latestTransaction = transactions.reduce((latest, current) => {
+      const latestDate = new Date(latest.collection_date || latest.created_at || 0)
+      const currentDate = new Date(current.collection_date || current.created_at || 0)
+      return currentDate > latestDate ? current : latest
+    })
+    
+    let pendingBalance = 0
+    let isCompleted = false
+    
+    if (latestTransaction && typeof latestTransaction.updated_remaining_balance === 'number') {
+      // Use the remaining balance from the transaction with the latest date
+      pendingBalance = latestTransaction.updated_remaining_balance
+      // If latest transaction is completed OR remaining balance is 0, then installment is completed
+      isCompleted = latestTransaction.is_completed === true || pendingBalance === 0
       
-      return {
-        installmentNumber,
-        subscriptionAmount,
-        totalPaid,
-        pendingBalance: Math.max(0, subscriptionAmount - totalPaid),
-        isCompleted: totalPaid >= subscriptionAmount,
-        transactions
-      }
+      console.log(`Installment ${installmentNumber}: Latest transaction (${latestTransaction.collection_date}) remaining balance = ${pendingBalance}, is_completed = ${latestTransaction.is_completed}, status = ${isCompleted ? 'Completed' : 'Pending'}`)
+    } else {
+      // Fallback: calculate pending based on default subscription amount
+      pendingBalance = Math.max(0, defaultSubscriptionAmount - totalPaid)
+      isCompleted = pendingBalance === 0
+      
+      console.log(`Installment ${installmentNumber}: Using fallback calculation, pending = ${pendingBalance}, total paid = ${totalPaid}`)
+    }
+    
+    // Sort transactions for display (oldest first based on created_at for chronological order)
+    const displayTransactions = [...transactions].sort((a, b) => {
+      const dateA = new Date(a.created_at || a.collection_date || 0)
+      const dateB = new Date(b.created_at || b.collection_date || 0)
+      return dateA.getTime() - dateB.getTime() // Oldest first (ascending)
+    })
+    
+    return {
+      installmentNumber,
+      subscriptionAmount: defaultSubscriptionAmount, // Use consistent subscription amount for all installments
+      totalPaid,
+      pendingBalance,
+      isCompleted, // Use the calculated isCompleted variable
+      transactions: displayTransactions
     }
   })
+  
+  console.log('Built installment data:', result.length, 'installments')
   
   // Sort installments by number
   return result.sort((a, b) => a.installmentNumber - b.installmentNumber)
@@ -320,6 +354,13 @@ function handleFromChitStart() {
 
 async function onSubmit() {
   errorMessage.value = ''
+  console.log('CustomerWise onSubmit called with:', {
+    selectedCustomerId: selectedCustomerId.value,
+    selectedGroupId: selectedGroupId.value,
+    fromDate: fromDate.value,
+    toDate: toDate.value
+  })
+  
   if (selectedCustomerId.value && selectedGroupId.value) {
     // Handle date logic
     let effectiveFromDate = fromDate.value
@@ -338,29 +379,40 @@ async function onSubmit() {
       effectiveFromDate = '1900-01-01'
     }
     
+    console.log('Fetching data with dates:', { effectiveFromDate, effectiveToDate })
+    
     try {
-      // Fetch both collections and collection balances
-      const [collectionsResponse, balancesResponse] = await Promise.all([
-        collectionsStore.fetchCollectionsByCustomerAndDateRange(
-          String(selectedCustomerId.value),
-          selectedGroupId.value,
-          effectiveFromDate,
-          effectiveToDate
-        ),
-        collectionsStore.fetchCollectionBalancesForCustomer(
-          selectedCustomerId.value,
-          selectedGroupId.value
-        )
-      ])
+      console.log('Fetching collections data...')
       
-      // Set the data
+      // Fetch collections (this is working fine)
+      const collectionsResponse = await collectionsStore.fetchCollectionsByCustomerAndDateRange(
+        String(selectedCustomerId.value),
+        selectedGroupId.value,
+        effectiveFromDate,
+        effectiveToDate
+      )
+      
+      console.log('Collections fetched successfully:', {
+        collectionsCount: collectionsResponse?.length || 0,
+        collectionsData: collectionsResponse?.slice(0, 2) // Show first 2 records for debugging
+      })
+      
+      // Set the collections data - this should be enough to display the table
       collections.value = collectionsResponse
-      collectionBalances.value = balancesResponse
+      collectionBalances.value = [] // Clear any old balance data
+      
+      console.log('Sample collection record:', collectionsResponse?.[0])
       
       // Update totals (will be recalculated by watcher)
       totalInstallments.value = collectionsResponse.length
       totalAmount.value = collectionsResponse.reduce((sum: number, c: any) => sum + (c.collection_amount || 0), 0)
+      
+      console.log('Data set successfully:', {
+        collectionsLength: collections.value.length,
+        totalAmount: totalAmount.value
+      })
     } catch (err: any) {
+      console.error('Error in onSubmit:', err)
       errorMessage.value = err?.response?.data?.message || 'No data found or server error.'
       collections.value = []
       collectionBalances.value = []
@@ -368,11 +420,82 @@ async function onSubmit() {
       totalAmount.value = 0
     }
   } else {
+    console.log('Missing required selections - customer or group not selected')
     collections.value = []
     collectionBalances.value = []
     totalInstallments.value = 0
     totalAmount.value = 0
   }
+}
+
+// Status helper functions for installments
+function getInstallmentStatusClass(installment: any): string {
+  // Check if installment is completed first
+  if (installment.isCompleted) {
+    return 'completed'
+  }
+  
+  // Check for excess payment (negative pending balance)
+  if (installment.pendingBalance < 0) {
+    return 'excess'
+  }
+  
+  const hasExcess = installment.totalPaid > installment.subscriptionAmount
+  
+  if (hasExcess) {
+    return 'excess'
+  } else {
+    return 'pending'
+  }
+}
+
+function getInstallmentStatusText(installment: any): string {
+  // Check if installment is completed first
+  if (installment.isCompleted) {
+    return 'Completed'
+  }
+  
+  // Check for excess payment (negative pending balance)
+  if (installment.pendingBalance < 0) {
+    const excessAmount = Math.abs(installment.pendingBalance)
+    return `Excess: ₹${excessAmount.toLocaleString()}`
+  }
+  
+  const hasExcess = installment.totalPaid > installment.subscriptionAmount
+  
+  if (hasExcess) {
+    const excessAmount = installment.totalPaid - installment.subscriptionAmount
+    return `Excess: ₹${excessAmount.toLocaleString()}`
+  } else {
+    return `Pending: ₹${installment.pendingBalance.toLocaleString()}`
+  }
+}
+
+// Status helper functions for individual transactions
+function getTransactionStatusClass(transaction: any): string {
+  if (transaction.is_completed) {
+    return 'completed'
+  }
+  
+  // Check if remaining balance is negative (excess payment)
+  if (transaction.updated_remaining_balance < 0) {
+    return 'excess'
+  }
+  
+  return 'pending'
+}
+
+function getTransactionStatusText(transaction: any): string {
+  if (transaction.is_completed) {
+    return 'Completed'
+  }
+  
+  // Check if remaining balance is negative (excess payment)
+  if (transaction.updated_remaining_balance < 0) {
+    return 'Excess'
+  }
+  
+  return 'Pending'
 }
 
 async function loadGroups() {
@@ -515,6 +638,10 @@ tr:hover {
 .status.completed {
   background: #dcfce7;
   color: #166534;
+}
+.status.excess {
+  background: #f3e8ff;
+  color: #7c3aed;
 }
 .status.pending {
   background: #fef3c7;

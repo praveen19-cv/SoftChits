@@ -50,7 +50,8 @@ export class GroupTableService {
           is_completed BOOLEAN DEFAULT 0,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           export_month INTEGER,
-          is_exported BOOLEAN DEFAULT 0
+          is_exported BOOLEAN DEFAULT 0,
+          monthly_subscription DECIMAL(10,2) DEFAULT 0
         )
       `).run();
       tables.push(collectionBalancesTableName);      // Create group members table

@@ -840,7 +840,9 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
     const month = Number(req.params.month);
     const { monthly_subscription } = req.body;
 
-    if (isNaN(groupId) || isNaN(month) || !monthly_subscription) {
+    console.log('Export request received:', { groupId, month, monthly_subscription, body: req.body });
+    
+    if (isNaN(groupId) || isNaN(month) || monthly_subscription === undefined || monthly_subscription === null || isNaN(Number(monthly_subscription))) {
       return res.status(400).json({ error: 'Invalid group ID, month, or missing monthly subscription' });
     }
     // Get group details
@@ -852,15 +854,43 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
       return res.status(404).json({ error: 'Group not found' });
     }
 
- 
-
+    // Verify that group has members before continuing
+    if (!group.member_count || group.member_count === 0) {
+      console.error(`Group has no members: ${groupId}`);
+      return res.status(400).json({ 
+        error: 'No members in group', 
+        message: 'This group has no members. Please add members to the group before exporting.' 
+      });
+    }
+    
     // Get the dynamic table names
+    const groupMembersTableName = GroupTableService.getTableName(Number(groupId), group.name, 'group_members');
+    
+    // Count actual members in the group_members table
+    const membersQuery = `SELECT COUNT(*) as count FROM ${groupMembersTableName} WHERE group_id = ?`;
+    const memberCount = await withRetry(() => 
+      db.prepare(membersQuery).get(groupId) as { count: number }
+    );
+    
+    const reportedMemberCount = group.member_count || 0;
+    const actualMemberCount = memberCount?.count || 0;
+    
+    // Verify that the group's member_count matches actual members in group_members table
+    if (reportedMemberCount !== actualMemberCount) {
+      console.error(`Group member count mismatch: reported=${reportedMemberCount}, actual=${actualMemberCount} for group ${groupId}`);
+      return res.status(400).json({
+        error: 'Member count mismatch',
+        message: `Member count mismatch: ${reportedMemberCount} in groups table vs ${actualMemberCount} actual members. Please verify all members are properly added before exporting.`
+      });
+    }
+
+    // Get the rest of the dynamic table names
     const monthlySubscriptionTable = GroupTableService.getTableName(Number(groupId), group.name, 'monthly_subscription');
     const balanceTableName = GroupTableService.getTableName(Number(groupId), group.name, 'collection_balance');
-    const groupMembersTableName = GroupTableService.getTableName(Number(groupId), group.name, 'group_members');
 
     // Execute all updates in a transaction
-    await executeTransaction(db, async () => {      // 1. Get group members
+    await executeTransaction(db, async () => {
+      // 1. Get group members
       const members = await withRetry(() => 
         db.prepare(`
           SELECT gm.member_id, gm.member_name 
@@ -870,7 +900,8 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
       );
 
       if (!members.length) {
-        throw new Error('No members found in group');
+        console.error(`No members found in group members table for group ${groupId}`);
+        throw new Error('No members found in this group. Please add members to the group before exporting.');
       }
 
 
@@ -954,9 +985,9 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
             INSERT INTO ${balanceTableName} (
               group_id, member_id, installment_number,
               total_paid, remaining_balance, is_completed,
-              is_exported, export_month, last_updated
-            ) VALUES (?, ?, ?, 0, ?, 0, 1, ?, CURRENT_TIMESTAMP)
-          `).run(groupId, member.member_id, month, monthly_subscription, month)
+              is_exported, export_month, last_updated, monthly_subscription
+            ) VALUES (?, ?, ?, 0, ?, 0, 1, ?, CURRENT_TIMESTAMP, ?)
+          `).run(groupId, member.member_id, month, monthly_subscription, month, monthly_subscription)
         );
       }
 
@@ -993,6 +1024,9 @@ router.post('/group/:groupId/export-month/:month', async (req, res) => {
     res.json({ success: true, message: 'Month exported successfully' });
   } catch (error: any) {
     console.error('Error in export endpoint:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Request params:', { groupId: req.params.groupId, month: req.params.month });
+    console.error('Request body:', req.body);
     res.status(500).json({ error: error.message || 'Failed to export month' });
   }
 });
@@ -1117,17 +1151,50 @@ router.get('/:groupId/customer-sheet', async (req, res) => {
     if (!tableExists) {
       return res.status(404).json({ error: 'Collection table not found' });
     }
-    // Fetch collections for the customer in the date range
-    const collections = await withRetry(() =>
-      db.prepare(`
+    // Get the monthly subscription table name
+    const monthlySubscriptionTableName = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
+    
+    // Check if monthly subscription table exists
+    const subscriptionTableExists = await withRetry(() =>
+      db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`)
+        .get(monthlySubscriptionTableName)
+    );
+    
+    let query;
+    if (subscriptionTableExists) {
+      // Join with monthly_subscription table if it exists
+      query = `
+        SELECT 
+          c.*, 
+          m.name as member_name,
+          ms.monthly_subscription
+        FROM ${collectionsTableName} c
+        JOIN members m ON c.member_id = m.id
+        LEFT JOIN ${monthlySubscriptionTableName} ms ON c.installment_number = ms.month_number
+        WHERE c.group_id = ? AND c.member_id = ?
+          AND c.collection_date >= ? AND c.collection_date <= ?
+        ORDER BY c.collection_date ASC, c.installment_number ASC
+      `;
+    } else {
+      // Use original query if table doesn't exist
+      query = `
         SELECT c.*, m.name as member_name
         FROM ${collectionsTableName} c
         JOIN members m ON c.member_id = m.id
         WHERE c.group_id = ? AND c.member_id = ?
           AND c.collection_date >= ? AND c.collection_date <= ?
         ORDER BY c.collection_date ASC, c.installment_number ASC
-      `).all(groupId, customerId, fromDate, toDate)
+      `;
+    }
+    
+    // Fetch collections for the customer in the date range
+    const collections = await withRetry(() =>
+      db.prepare(query).all(groupId, customerId, fromDate, toDate)
     );
+    
+    // Log debug info
+  
+    
     res.json(collections);
   } catch (error) {
     console.error('Error fetching customer-wise collection sheet:', error);
@@ -1292,6 +1359,50 @@ router.post('/update-schema/:groupId', async (req, res) => {
   } catch (error) {
     console.error('Error updating schema:', error);
     res.status(500).json({ error: 'Failed to update schema' });
+  }
+});
+
+// Get actual group members count for validation
+router.get('/group/:groupId/members-count', async (req, res) => {
+  const db = getReadDb();
+  try {
+    const groupId = Number(req.params.groupId);
+    
+    if (isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid group ID' });
+    }
+    
+    // Get group details
+    const group = await withRetry(() => 
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId) as Group | undefined
+    );
+    
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    
+    // Get the group members table name
+    const groupMembersTableName = GroupTableService.getTableName(groupId, group.name, 'group_members');
+    
+    // Count actual members in the group_members table
+    const membersQuery = `SELECT COUNT(*) as count FROM ${groupMembersTableName} WHERE group_id = ?`;
+    const memberCount = await withRetry(() => 
+      db.prepare(membersQuery).get(groupId) as { count: number }
+    );
+    
+    const reportedMemberCount = group.member_count || 0;
+    const actualMemberCount = memberCount?.count || 0;
+    
+    return res.json({
+      groupId,
+      reportedMemberCount,
+      actualMemberCount: memberCount?.count || 0,
+      memberCount: memberCount?.count || 0,
+      matched: reportedMemberCount === actualMemberCount
+    });
+  } catch (error) {
+    console.error('Error getting group members count:', error);
+    res.status(500).json({ error: 'Failed to get group members count' });
   }
 });
 

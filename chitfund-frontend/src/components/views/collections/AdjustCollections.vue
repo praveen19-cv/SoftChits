@@ -83,42 +83,27 @@
       <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
 
       <!-- Customer Data Display -->
-      <div v-if="customerInstallmentData.length > 0" class="customer-data-section">
-        <h4>Customer Installment Data</h4>
-        <div class="table-responsive">
-          <table class="modern-table">
-            <thead>
-              <tr>
-                <th>Group</th>
-                <th>Installment</th>
-                <th>Subscription Amount</th>
-                <th>Total Paid</th>
-                <th>Status</th>
-                <th>Excess/Shortage</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="installment in customerInstallmentData" :key="`${installment.groupId}-${installment.installmentNumber}`">
-                <td>{{ installment.groupName }}</td>
-                <td>{{ installment.installmentNumber }}</td>
-                <td>₹{{ installment.subscriptionAmount.toLocaleString() }}</td>
-                <td>₹{{ installment.totalPaid.toLocaleString() }}</td>
-                <td>
-                  <span :class="['status', getStatusClass(installment)]">
-                    {{ getStatusText(installment) }}
-                  </span>
-                </td>
-                <td :class="['amount', getAmountClass(installment)]">
-                  ₹{{ Math.abs(installment.excessShortage).toLocaleString() }}
-                  {{ installment.excessShortage > 0 ? '(Excess)' : installment.excessShortage < 0 ? '(Shortage)' : '' }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+      <div v-if="selectedCustomer && selectedGroups.length > 0 && collectionsData.length > 0" class="customer-data-section">
+        <h4>Customer Collection Ledgers</h4>
+        
+        <!-- Display one CustomerLedger for each selected group -->
+        <div v-for="group in selectedGroups" :key="group.id" class="group-ledger-section">
+          <h5 class="group-ledger-title">{{ group.name }}</h5>
+          <CustomerLedger 
+            :customer="selectedCustomer"
+            :group="group"
+            :collections="getCollectionsForGroup(group.id)"
+          />
         </div>
+      </div>
+      
+      <!-- Show message if no data found -->
+      <div v-else-if="selectedCustomer && selectedGroups.length > 0 && collectionsData.length === 0" class="no-data-message">
+        <p>No collection data found for {{ selectedCustomer.name }} in the selected groups.</p>
+      </div>
 
-        <!-- Adjustment Form -->
-        <div class="adjustment-form">
+      <!-- Adjustment Form - only show when customer data is loaded -->
+      <div v-if="selectedCustomer && selectedGroups.length > 0 && collectionsData.length > 0" class="adjustment-form">
           <h4>Make Adjustment</h4>
           <div class="adjustment-controls">
             <div class="form-group">
@@ -233,12 +218,7 @@
             </button>
           </div>
         </div>
-      </div>
 
-      <div v-else-if="selectedCustomerId && selectedGroupIds.length > 0 && !errorMessage" class="no-data">
-        <img src="https://cdn-icons-png.flaticon.com/512/4076/4076549.png" alt="No Data" class="no-data-img" />
-        <div>No installment data found for the selected criteria.</div>
-      </div>
     </div>
     
     <StandardNotification
@@ -257,6 +237,7 @@ import { useGroupsStore } from '@/stores/GroupsStore'
 import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useMembersStore } from '@/stores/MembersStore'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import CustomerLedger from './ViewCollections/CustomerLedger.vue'
 
 const groupsStore = useGroupsStore()
 const collectionsStore = useCollectionsStore()
@@ -274,6 +255,7 @@ const groupDropdownOpen = ref(false)
 const customers = ref<{ id: number; name: string }[]>([])
 const groups = ref<{ id: number; name: string }[]>([])
 const customerInstallmentData = ref<any[]>([])
+const collectionsData = ref<any[]>([])
 const errorMessage = ref('')
 
 // Notification state
@@ -391,6 +373,18 @@ const canPerformTransfer = computed(() => {
          parseFloat(adjustmentForm.value.amount) <= maxTransferAmount.value
 })
 
+const selectedCustomer = computed(() => {
+  return customers.value.find(c => c.id === selectedCustomerId.value) || null
+})
+
+const selectedGroups = computed(() => {
+  return groups.value.filter(g => selectedGroupIds.value.includes(g.id))
+})
+
+function getCollectionsForGroup(groupId: number) {
+  return collectionsData.value.filter(collection => collection.group_id === groupId)
+}
+
 // Methods
 function selectCustomer(customer: { id: number; name: string }) {
   selectedCustomerId.value = customer.id
@@ -399,6 +393,7 @@ function selectCustomer(customer: { id: number; name: string }) {
   
   // Reset data when customer changes
   customerInstallmentData.value = []
+  collectionsData.value = []
   resetAdjustmentForm()
 }
 
@@ -412,6 +407,7 @@ function toggleGroup(group: { id: number; name: string }) {
   
   // Reset data when groups change
   customerInstallmentData.value = []
+  collectionsData.value = []
   resetAdjustmentForm()
 }
 
@@ -494,9 +490,11 @@ async function loadCustomerData() {
   try {
     errorMessage.value = ''
     customerInstallmentData.value = []
+    collectionsData.value = []
 
     // Fetch collection balances for each selected group
     const allInstallmentData: any[] = []
+    const allCollections: any[] = []
 
     for (const groupId of selectedGroupIds.value) {
       try {
@@ -510,6 +508,9 @@ async function loadCustomerData() {
           ),
           collectionsStore.fetchCollectionBalances(groupId) // Get all balances for this group
         ])
+
+        // Store all collections for CustomerLedger components
+        allCollections.push(...collectionsResponse)
 
         const groupName = groups.value.find(g => g.id === groupId)?.name || `Group ${groupId}`
 
@@ -537,6 +538,9 @@ async function loadCustomerData() {
         console.warn(`Failed to load data for group ${groupId}:`, groupError)
       }
     }
+
+    // Store collections data for CustomerLedger components
+    collectionsData.value = allCollections
 
     if (allInstallmentData.length === 0) {
       showErrorNotification('No installment data found for the selected customer and groups')
@@ -930,6 +934,31 @@ tr:hover {
   width: 80px;
   margin-bottom: 1rem;
   opacity: 0.7;
+}
+
+.group-ledger-section {
+  margin-bottom: 2rem;
+}
+
+.group-ledger-title {
+  color: #2c3e50;
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  padding: 0.5rem 1rem;
+  background: #e3f2fd;
+  border-radius: 8px;
+  border-left: 4px solid #2196f3;
+}
+
+.no-data-message {
+  text-align: center;
+  color: #666;
+  font-size: 1.1rem;
+  padding: 2rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
 }
 
 @media (max-width: 900px) {

@@ -1,6 +1,12 @@
 <template>
   <div class="chit-dates-table">
     <h4>{{ isTenDatesChit ? 'Chit Date Settings (10th, 20th, 30th of each month)' : 'Chit Date Settings (Monthly)' }}</h4>
+    
+    <!-- Warning for no members -->
+    <div v-if="!store.currentGroup?.member_count || store.currentGroup.member_count === 0" class="no-members-warning">
+      <strong>⚠️ Warning:</strong> No members found in this group. Please add members before exporting bid amounts.
+    </div>
+    
     <div v-if="store.loading" class="loading">
       Loading...
     </div>
@@ -44,7 +50,8 @@
       <button
         class="btn btn-primary export-btn"
         @click="exportAsBidAmounts"
-        :disabled="store.loading"
+        :disabled="store.loading || !store.currentGroup?.member_count || store.currentGroup.member_count === 0"
+        :title="(!store.currentGroup?.member_count || store.currentGroup.member_count === 0) ? 'No members in group. Please add members first.' : 'Export chit dates as bid amounts'"
       >
         Export as Bid Amount
       </button>
@@ -139,7 +146,6 @@ async function generateChitDates(props: { startDate: string; endDate: string; is
   await calculateMinimumAmounts(dates);
 
   // Debug: Log the generated dates to see what we actually created
-  console.log('Generated chit dates for legacy group:', dates.length, 'dates');
 
   return dates;
 }
@@ -185,8 +191,7 @@ async function loadChitDates() {
     if (Array.isArray(data) && data.length) {
       chitDates.value = data.map(d => ({ chit_date: d.chit_date, amount: Number(d.amount) || 0 }))
     } else {
-      console.log('No existing chit dates found, generating for legacy group');
-      // Generate new chit dates with calculated minimum amounts (for legacy groups only)
+  // Generate new chit dates with calculated minimum amounts (for legacy groups only)
       chitDates.value = await generateChitDates({
         startDate: props.startDate,
         endDate: props.endDate,
@@ -242,6 +247,13 @@ async function exportAsBidAmounts() {
       throw new Error('Group details not found');
     }
     
+    // Check if group has members before attempting export
+    if (!group.member_count || group.member_count === 0) {
+    
+      showNotification('No members found in this group. Please add members to the group before exporting bid amounts.', 'error');
+      return;
+    }
+ 
     const subs = await store.fetchMonthlySubscriptions(Number(props.groupId));
     
     // Calculate commission amount
@@ -284,6 +296,7 @@ async function exportAsBidAmounts() {
     });
     
     await store.updateMonthlySubscriptions(Number(props.groupId), updated);
+  
     const message = props.isTenDatesChit 
       ? 'Bid amounts exported to subscriptions (10th, 20th, 30th intervals) with calculated dividends'
       : 'Bid amounts exported to monthly subscriptions with calculated dividends';
@@ -346,6 +359,16 @@ onMounted(loadChitDates)
 <style scoped>
 .chit-dates-table {
   margin: 20px 0;
+}
+
+.no-members-warning {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  color: #856404;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
 }
 
 /* Custom spacing for Export button */

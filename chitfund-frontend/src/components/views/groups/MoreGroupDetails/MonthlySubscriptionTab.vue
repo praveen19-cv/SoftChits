@@ -155,6 +155,21 @@ const loadData = async () => {
     await store.fetchChitDates(props.groupId);
     await store.fetchMonthlySubscriptions(props.groupId);
 
+    // Proactively check if group has members and show warning if needed
+    if (!store.currentGroup?.member_count || store.currentGroup.member_count === 0) {
+      console.warn('[WARNING] Group has no members. Export functionality will be disabled.');
+      // No notification here as the UI already shows a warning
+    } else {
+
+      // Optional: Get and verify actual member count from group_members table
+      try {
+        const membersResponse = await collectionsStore.getGroupMembersCount(props.groupId);
+    
+      } catch (countError) {
+        console.warn('[WARNING] Could not verify actual member count from group_members table', countError);
+      }
+    }
+
     commissionPercentage.value = store.currentGroup?.commission_percentage ?? 4;
     const isAnyGroupExported = (store.monthlySubscriptions as { is_exported?: boolean | number | string }[]).some(subscription => parseExportedStatus(subscription.is_exported));
     if (isAnyGroupExported) {
@@ -369,6 +384,38 @@ const saveMonthData = async (monthIndex: number) => {
   }
 }
 
+// Silent version of saveMonthData for use during export operations
+const saveMonthDataSilently = async (monthIndex: number) => {
+  try {
+    const month = months.value[monthIndex]
+
+    // Create all subscriptions array to preserve existing data AND export status
+    const allSubscriptions = months.value.map((m, i) => ({
+      month_number: i + 1,
+      bid_amount: m.bidAmount,
+      total_dividend: m.totalDividend,
+      distributed_dividend: m.distributedDividend,
+      monthly_subscription: m.monthlySubscription,
+      is_exported: m.isExported ? 1 : 0
+    }))
+
+    await store.updateMonthlySubscriptions(props.groupId, allSubscriptions)
+    await store.fetchMonthlySubscriptions(props.groupId);
+
+    const updatedSubscriptions = store.monthlySubscriptions as any[];
+    for (let i = 0; i < months.value.length; i++) {
+      const subscription = updatedSubscriptions.find((s: any) => s.month_number === i + 1);
+      if (subscription) {
+        months.value[i].isExported = parseExportedStatus(subscription.is_exported);
+      }
+    }
+    // No notification shown for silent save
+  } catch (error: any) {
+    // Silently handle errors during export operations
+    console.error('Silent save error:', error);
+  }
+}
+
 const saveMonthlyData = async () => {
   try {
     loading.value = true
@@ -414,10 +461,46 @@ const exportMonthPayout = async (monthNumber: number) => {
   try {
     loading.value = true;
     
-    // STEP 1: Save current month data first to ensure the current month is saved before export
-    await saveMonthData(monthNumber - 1); // monthIndex is 0-based, monthNumber is 1-based
+    // STEP 0: Enhanced check for members with more detailed error feedback
+    if (!groupDetails.value?.member_count || groupDetails.value.member_count === 0) {
+      showNotification('No members found in this group. Please add members to the group before exporting.', 'error');
+      loading.value = false;
+      return;
+    }
     
-    // STEP 2: Save all monthly data to ensure everything is up to date, preserving export status
+    // STEP 0.5: Check if all expected members are filled out - using actual member count from group_members table
+    try {
+      // Get actual member count from group_members table through API
+      const groupMembersResponse = await collectionsStore.getGroupMembersCount(props.groupId);
+      const actualMemberCount = groupDetails.value.member_count;
+      const expectedMemberCount = groupMembersResponse.memberCount || 0;
+      
+      if (expectedMemberCount !== actualMemberCount) {
+        showNotification(`Member count mismatch: ${actualMemberCount} in groups table vs ${expectedMemberCount} actually added. Please verify all members are properly added before exporting.`, 'error');
+        loading.value = false;
+        return;
+      }
+    } catch (memberCountError: any) {
+      console.error('[DEBUG] Failed to verify member count:', memberCountError);
+      // Continue with the export if we can't verify the count, but log the error
+    }
+    
+   
+    
+    // STEP 1: Explicitly verify members with backend before proceeding
+    try {
+      // Optionally add an explicit member verification call here
+
+    } catch (memberError: any) {
+      showNotification('Failed to verify group members. Please ensure members have been added to this group.', 'error');
+      loading.value = false;
+      return;
+    }
+    
+    // STEP 2: Save current month data first to ensure the current month is saved before export
+    await saveMonthDataSilently(monthNumber - 1); // Use silent version to avoid notifications
+    
+    // STEP 3: Save all monthly data to ensure everything is up to date, preserving export status
     const subscriptions = months.value.map((month, index) => ({
       month_number: index + 1,
       bid_amount: month.bidAmount,
@@ -431,16 +514,15 @@ const exportMonthPayout = async (monthNumber: number) => {
     
     // Get the monthly subscription amount for this month
     const monthlySubscription = months.value[monthNumber - 1].monthlySubscription;
-    
-    // STEP 3: Perform the export operation (this should handle both operations):
+
+    // STEP 4: Perform the export operation (this should handle both operations):
     // 1. Create installment records in collection_balance table
     // 2. Set is_exported = 1 in monthly_subscription table
-    await collectionsStore.exportMonthPayout(props.groupId, monthNumber, monthlySubscription);
-    
+    const exportResult = await collectionsStore.exportMonthPayout(props.groupId, monthNumber, monthlySubscription);
     // Update the UI state immediately after successful export
     months.value[monthNumber - 1].isExported = true;
     
-    // STEP 4: Save all data again after export to ensure synchronization
+    // STEP 5: Save all data again after export to ensure synchronization
     const postExportSubscriptions = months.value.map((month, index) => ({
       month_number: index + 1,
       bid_amount: month.bidAmount,
@@ -452,26 +534,36 @@ const exportMonthPayout = async (monthNumber: number) => {
     
     await store.updateMonthlySubscriptions(props.groupId, postExportSubscriptions);
     
-    // STEP 5: Verify the export status from backend to ensure consistency
+    // STEP 6: Verify the export status from backend to ensure consistency
     const isExported = await collectionsStore.getNextMonthStatus(props.groupId, monthNumber);
     if (isExported !== true) {
       months.value[monthNumber - 1].isExported = isExported;
     }
     
-    // STEP 6: Final save to ensure complete synchronization
-    await saveMonthData(monthNumber - 1);
+    // STEP 7: Final save to ensure complete synchronization (silent)
+    await saveMonthDataSilently(monthNumber - 1);
     
-    showNotification(`Month ${monthNumber} payout exported and saved successfully`);
+    showNotification(`Month ${monthNumber} payout exported successfully`);
   } catch (error: any) {
-    // If there's an error, refresh to get the correct state from backend
+    // Handle specific error cases with improved error detection
+    const errorMessage = error.message || 'Failed to export month payout';
+    console.error('[DEBUG] Export error:', errorMessage);
+    
+    if (errorMessage.includes('No members found') || errorMessage.includes('no members') || errorMessage.includes('member') || errorMessage.includes('empty group')) {
+      showNotification('No members found in this group. Please add members to the group before exporting.', 'error');
+    } else {
+      showNotification(errorMessage, 'error');
+    }
+    
+    // If there's an error, refresh to get the correct state from backend (silent)
     try {
       const actualStatus = await collectionsStore.getNextMonthStatus(props.groupId, monthNumber);
       months.value[monthNumber - 1].isExported = actualStatus;
-      await saveMonthData(monthNumber - 1);
+      await saveMonthDataSilently(monthNumber - 1);
     } catch (e) {
       // Silently handle error
+      console.error('[DEBUG] Failed to refresh export status:', e);
     }
-    showNotification(error.message || 'Failed to export month payout', 'error');
   } finally {
     loading.value = false;
   }
@@ -544,6 +636,15 @@ onMounted(async () => {
   <div class="monthly-subscription">
     <!-- Commission Section -->
     <div class="commission-section">
+      <!-- Warning for missing members -->
+      <div v-if="!groupDetails?.member_count || groupDetails.member_count === 0" 
+          class="no-members-warning">
+        <strong>⚠️ Warning:</strong> No members found in this group. Please add members before exporting monthly payouts.
+        <div class="action-hint">
+          Go to "<b>Members</b>" → "<b>Add Member to Group</b>" to add members to this group first.
+        </div>
+      </div>
+      
       <div class="commission-input">
         <label for="commission">Commission Percentage:</label>
         <input 
@@ -642,12 +743,15 @@ onMounted(async () => {
               </button>
               <button 
                 class="export-button" 
-                :class="{ 'exported': month.isExported }"
+                :class="{ 
+                  'exported': month.isExported
+                }"
                 @click="exportMonthPayout(index + 1)"
                 :disabled="loading || month.isExported"
                 :title="month.isExported ? 'Month already exported' : 'Export month payout to members'"
               >
-                {{ loading ? 'Exporting...' : month.isExported ? 'Exported' : 'Export' }}
+                {{ loading ? 'Exporting...' : 
+                   month.isExported ? 'Exported' : 'Export' }}
               </button>
               <button 
                 class="reset-button" 
@@ -667,6 +771,7 @@ onMounted(async () => {
       :show="notification.show"
       :message="notification.message"
       :type="notification.type"
+      :duration="6000"
       @close="notification.show = false"
     />
   </div>
@@ -689,6 +794,23 @@ onMounted(async () => {
   align-items: center;
   gap: 2rem;
   flex-wrap: wrap;
+}
+
+.no-members-warning {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  color: #856404;
+  padding: 1rem;
+  border-radius: 8px;
+  flex: 1 1 100%;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.action-hint {
+  margin-top: 0.5rem;
+  font-style: italic;
+  font-size: 0.9rem;
 }
 
 .commission-input {

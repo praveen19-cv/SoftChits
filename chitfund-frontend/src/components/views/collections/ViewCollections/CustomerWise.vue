@@ -76,90 +76,14 @@
         <button class="submit-btn" @click="onSubmit" :disabled="!selectedCustomerId || !selectedGroupId">Submit</button>
       </div>
       <div v-if="errorMessage" class="error-message">{{ errorMessage }}</div>
-      <div v-if="installmentData.length > 0" class="collection-table">
-        <div class="table-responsive">
-          <table class="modern-table">
-            <thead>
-              <tr>
-                <th style="width: 50px;"></th>
-                <th>Installment</th>
-                <th>Subscription Amount</th>
-                <th>Total Paid</th>
-                <th>Status</th>
-                <th>Pending Balance</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template v-for="installment in installmentData" :key="installment.installmentNumber">
-                <!-- Main installment row -->
-                <tr class="installment-row" @click="toggleInstallment(installment.installmentNumber)">
-                  <td class="expand-cell">
-                    <div class="expand-button" :class="{ 'expanded': expandedInstallments.includes(installment.installmentNumber) }">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                      </svg>
-                    </div>
-                  </td>
-                  <td>{{ installment.installmentNumber }}</td>
-                  <td>₹{{ installment.subscriptionAmount.toLocaleString() }}</td>
-                  <td>₹{{ installment.totalPaid.toLocaleString() }}</td>
-                  <td>
-                    <span :class="['status', getInstallmentStatusClass(installment)]">
-                      {{ getInstallmentStatusText(installment) }}
-                    </span>
-                  </td>
-                  <td>₹{{ installment.pendingBalance.toLocaleString() }}</td>
-                </tr>
-                
-                <!-- Expanded transaction details -->
-                <tr v-if="expandedInstallments.includes(installment.installmentNumber)" class="transaction-details-row">
-                  <td colspan="6" class="transaction-details-cell">
-                    <div class="transaction-details">
-                      <h4>Installment {{ installment.installmentNumber }} Transactions</h4>
-                      <table class="transaction-table">
-                        <thead>
-                          <tr>
-                            <th>Collection Date</th>
-                            <th>Amount</th>
-                            <th>Status</th>
-                            <th>Remaining Balance</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr v-for="transaction in installment.transactions" :key="transaction.id">
-                            <td>{{ transaction.collection_date ? (new Date(transaction.collection_date).toLocaleDateString('en-GB')) : '-' }}</td>
-                            <td>₹{{ (transaction.collection_amount || 0).toLocaleString() }}</td>
-                            <td>
-                              <span :class="['status', getTransactionStatusClass(transaction)]">
-                                {{ getTransactionStatusText(transaction) }}
-                              </span>
-                            </td>
-                            <td>₹{{ (transaction.updated_remaining_balance || 0).toLocaleString() }}</td>
-                          </tr>
-                          <tr v-if="installment.transactions.length === 0">
-                            <td colspan="4" class="no-transactions">No transactions yet</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                      <div class="transaction-summary">
-                        <strong>Total for Installment {{ installment.installmentNumber }}: ₹{{ installment.totalPaid.toLocaleString() }}</strong>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-        <div class="summary total-amount">
-          <span>Total Installments: <b>{{ installmentData.length }}</b></span>
-          <span style="margin-left:2rem;">Total Amount: <b class="total-value">₹{{ totalAmount.toLocaleString() }}</b></span>
-        </div>
-      </div>
-      <div v-else-if="selectedCustomerId && selectedGroupId && !errorMessage" class="no-data">
-        <img src="https://cdn-icons-png.flaticon.com/512/4076/4076549.png" alt="No Data" class="no-data-img" />
-        <div>No collections found for the selected criteria.</div>
-      </div>
+      
+      <!-- Use CustomerLedger component -->
+      <CustomerLedger 
+        :customer="selectedCustomer"
+        :group="selectedGroup"
+        :collections="collections"
+      />
+      
       <PendingBalanceEach :customerId="selectedCustomerId" :groupId="selectedGroupId" />
     </div>
   </div>
@@ -171,6 +95,7 @@ import { useGroupsStore } from '@/stores/GroupsStore'
 import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useMembersStore } from '@/stores/MembersStore'
 import PendingBalanceEach from './PendingBalanceEach.vue'
+import CustomerLedger from './CustomerLedger.vue'
 
 const groupsStore = useGroupsStore()
 const collectionsStore = useCollectionsStore()
@@ -185,121 +110,13 @@ const toDate = ref('')
 const fromChitStart = ref(false)
 const collections = ref<any[]>([])
 const collectionBalances = ref<any[]>([])
-const totalInstallments = ref(0)
-const totalAmount = ref(0)
 const errorMessage = ref('')
-const expandedInstallments = ref<number[]>([])
 
 const customers = ref<{ id: number; name: string }[]>([])
 const groups = ref<{ id: number; name: string; start_date?: string; total_amount?: number; member_count?: number }[]>([])
 
 const customerDropdownOpen = ref(false)
 const groupDropdownOpen = ref(false)
-
-// Computed property to organize collections by installment
-const installmentData = computed(() => {
-  if (!collections.value.length || !selectedGroupId.value) return []
-  
-  console.log('Building installment data from collections:', collections.value.length)
-  
-  // Group collections by installment number
-  const installmentMap = new Map<number, any[]>()
-  
-  // Sort collections by installment number first
-  const sortedCollections = [...collections.value].sort((a, b) => {
-    return a.installment_number - b.installment_number
-  })
-  
-  sortedCollections.forEach(collection => {
-    const instNum = collection.installment_number
-    if (!installmentMap.has(instNum)) {
-      installmentMap.set(instNum, [])
-    }
-    installmentMap.get(instNum)!.push(collection)
-  })
-  
-  // Sort transactions within each installment by collection_date descending (most recent first)
-  installmentMap.forEach((transactions, installmentNumber) => {
-    transactions.sort((a, b) => {
-      // First sort by collection_date (most recent first), then by created_at if dates are the same
-      const dateA = new Date(a.collection_date || a.created_at || 0)
-      const dateB = new Date(b.collection_date || b.created_at || 0)
-      return dateB.getTime() - dateA.getTime()
-    })
-  })
-  
-  // Get selected group info for subscription amount calculation
-  const selectedGroup = groups.value.find(g => g.id === selectedGroupId.value)
-  const defaultSubscriptionAmount = selectedGroup?.total_amount && selectedGroup?.member_count
-    ? selectedGroup.total_amount / selectedGroup.member_count
-    : 10000
-  
-  console.log('Selected group for subscription calculation:', {
-    groupId: selectedGroupId.value,
-    groupName: selectedGroup?.name,
-    totalAmount: selectedGroup?.total_amount,
-    memberCount: selectedGroup?.member_count,
-    calculatedSubscription: defaultSubscriptionAmount
-  })
-  
-  // Convert to array of installment data
-  const result = Array.from(installmentMap.entries()).map(([installmentNumber, transactions]) => {
-    // Calculate totals for this installment
-    const totalPaid = transactions.reduce((sum, t) => sum + (t.collection_amount || 0), 0)
-    
-    // Find the transaction with the latest collection_date to get the most current remaining balance
-    const latestTransaction = transactions.reduce((latest, current) => {
-      const latestDate = new Date(latest.collection_date || latest.created_at || 0)
-      const currentDate = new Date(current.collection_date || current.created_at || 0)
-      return currentDate > latestDate ? current : latest
-    })
-    
-    let pendingBalance = 0
-    let isCompleted = false
-    
-    if (latestTransaction && typeof latestTransaction.updated_remaining_balance === 'number') {
-      // Use the remaining balance from the transaction with the latest date
-      pendingBalance = latestTransaction.updated_remaining_balance
-      // If latest transaction is completed OR remaining balance is 0, then installment is completed
-      isCompleted = latestTransaction.is_completed === true || pendingBalance === 0
-      
-      console.log(`Installment ${installmentNumber}: Latest transaction (${latestTransaction.collection_date}) remaining balance = ${pendingBalance}, is_completed = ${latestTransaction.is_completed}, status = ${isCompleted ? 'Completed' : 'Pending'}`)
-    } else {
-      // Fallback: calculate pending based on default subscription amount
-      pendingBalance = Math.max(0, defaultSubscriptionAmount - totalPaid)
-      isCompleted = pendingBalance === 0
-      
-      console.log(`Installment ${installmentNumber}: Using fallback calculation, pending = ${pendingBalance}, total paid = ${totalPaid}`)
-    }
-    
-    // Sort transactions for display (oldest first based on created_at for chronological order)
-    const displayTransactions = [...transactions].sort((a, b) => {
-      const dateA = new Date(a.created_at || a.collection_date || 0)
-      const dateB = new Date(b.created_at || b.collection_date || 0)
-      return dateA.getTime() - dateB.getTime() // Oldest first (ascending)
-    })
-    
-    return {
-      installmentNumber,
-      subscriptionAmount: defaultSubscriptionAmount, // Use consistent subscription amount for all installments
-      totalPaid,
-      pendingBalance,
-      isCompleted, // Use the calculated isCompleted variable
-      transactions: displayTransactions
-    }
-  })
-  
-  console.log('Built installment data:', result.length, 'installments')
-  
-  // Sort installments by number
-  return result.sort((a, b) => a.installmentNumber - b.installmentNumber)
-})
-
-// Update totals based on installment data
-watch(installmentData, (newData) => {
-  totalInstallments.value = newData.length
-  totalAmount.value = newData.reduce((sum, inst) => sum + inst.totalPaid, 0)
-})
 
 const filteredCustomers = computed(() => {
   const search = customerSearch.value.toLowerCase()
@@ -319,14 +136,12 @@ const selectedGroupName = computed(() => {
   return group ? group.name : ''
 })
 
-function toggleInstallment(installmentNumber: number) {
-  const index = expandedInstallments.value.indexOf(installmentNumber)
-  if (index > -1) {
-    expandedInstallments.value.splice(index, 1)
-  } else {
-    expandedInstallments.value.push(installmentNumber)
-  }
-}
+const selectedCustomer = computed(() => {
+  return customers.value.find(c => c.id === selectedCustomerId.value) || null
+})
+const selectedGroup = computed(() => {
+  return groups.value.find(g => g.id === selectedGroupId.value) || null
+})
 
 function selectCustomer(customer: { id: number; name: string }) {
   selectedCustomerId.value = customer.id
@@ -354,12 +169,7 @@ function handleFromChitStart() {
 
 async function onSubmit() {
   errorMessage.value = ''
-  console.log('CustomerWise onSubmit called with:', {
-    selectedCustomerId: selectedCustomerId.value,
-    selectedGroupId: selectedGroupId.value,
-    fromDate: fromDate.value,
-    toDate: toDate.value
-  })
+  
   
   if (selectedCustomerId.value && selectedGroupId.value) {
     // Handle date logic
@@ -379,12 +189,9 @@ async function onSubmit() {
       effectiveFromDate = '1900-01-01'
     }
     
-    console.log('Fetching data with dates:', { effectiveFromDate, effectiveToDate })
-    
+   
     try {
-      console.log('Fetching collections data...')
-      
-      // Fetch collections (this is working fine)
+      // Fetch collections
       const collectionsResponse = await collectionsStore.fetchCollectionsByCustomerAndDateRange(
         String(selectedCustomerId.value),
         selectedGroupId.value,
@@ -392,110 +199,53 @@ async function onSubmit() {
         effectiveToDate
       )
       
-      console.log('Collections fetched successfully:', {
-        collectionsCount: collectionsResponse?.length || 0,
-        collectionsData: collectionsResponse?.slice(0, 2) // Show first 2 records for debugging
-      })
+      // Fetch monthly subscription data for the group
+      let monthlySubscriptions = [];
+      try {
+        monthlySubscriptions = await collectionsStore.fetchMonthlySubscriptions(selectedGroupId.value);
+    
+      } catch (subscriptionError) {
+        console.warn("Could not fetch monthly subscriptions:", subscriptionError);
+      }
       
-      // Set the collections data - this should be enough to display the table
-      collections.value = collectionsResponse
+      // Enhance collections with monthly subscription data if not already present
+      if (monthlySubscriptions.length > 0) {
+        // Create a map for quick lookup
+        const subscriptionsMap = new Map();
+        monthlySubscriptions.forEach((sub: any) => {
+          subscriptionsMap.set(sub.installment_number, sub.monthly_subscription);
+        });
+        
+        // Enhance each collection with the corresponding monthly_subscription if not already present
+        const enhancedCollections = collectionsResponse.map((collection: any) => {
+          if (collection.monthly_subscription === undefined && subscriptionsMap.has(collection.installment_number)) {
+            return {
+              ...collection,
+              monthly_subscription: subscriptionsMap.get(collection.installment_number)
+            };
+          }
+          return collection;
+        });
+        
+        collections.value = enhancedCollections;
+       
+      } else {
+        // Set the original collections data
+        collections.value = collectionsResponse;
+      }
+      
       collectionBalances.value = [] // Clear any old balance data
-      
-      console.log('Sample collection record:', collectionsResponse?.[0])
-      
-      // Update totals (will be recalculated by watcher)
-      totalInstallments.value = collectionsResponse.length
-      totalAmount.value = collectionsResponse.reduce((sum: number, c: any) => sum + (c.collection_amount || 0), 0)
-      
-      console.log('Data set successfully:', {
-        collectionsLength: collections.value.length,
-        totalAmount: totalAmount.value
-      })
     } catch (err: any) {
       console.error('Error in onSubmit:', err)
       errorMessage.value = err?.response?.data?.message || 'No data found or server error.'
       collections.value = []
       collectionBalances.value = []
-      totalInstallments.value = 0
-      totalAmount.value = 0
     }
   } else {
-    console.log('Missing required selections - customer or group not selected')
+  
     collections.value = []
     collectionBalances.value = []
-    totalInstallments.value = 0
-    totalAmount.value = 0
   }
-}
-
-// Status helper functions for installments
-function getInstallmentStatusClass(installment: any): string {
-  // Check if installment is completed first
-  if (installment.isCompleted) {
-    return 'completed'
-  }
-  
-  // Check for excess payment (negative pending balance)
-  if (installment.pendingBalance < 0) {
-    return 'excess'
-  }
-  
-  const hasExcess = installment.totalPaid > installment.subscriptionAmount
-  
-  if (hasExcess) {
-    return 'excess'
-  } else {
-    return 'pending'
-  }
-}
-
-function getInstallmentStatusText(installment: any): string {
-  // Check if installment is completed first
-  if (installment.isCompleted) {
-    return 'Completed'
-  }
-  
-  // Check for excess payment (negative pending balance)
-  if (installment.pendingBalance < 0) {
-    const excessAmount = Math.abs(installment.pendingBalance)
-    return `Excess: ₹${excessAmount.toLocaleString()}`
-  }
-  
-  const hasExcess = installment.totalPaid > installment.subscriptionAmount
-  
-  if (hasExcess) {
-    const excessAmount = installment.totalPaid - installment.subscriptionAmount
-    return `Excess: ₹${excessAmount.toLocaleString()}`
-  } else {
-    return `Pending: ₹${installment.pendingBalance.toLocaleString()}`
-  }
-}
-
-// Status helper functions for individual transactions
-function getTransactionStatusClass(transaction: any): string {
-  if (transaction.is_completed) {
-    return 'completed'
-  }
-  
-  // Check if remaining balance is negative (excess payment)
-  if (transaction.updated_remaining_balance < 0) {
-    return 'excess'
-  }
-  
-  return 'pending'
-}
-
-function getTransactionStatusText(transaction: any): string {
-  if (transaction.is_completed) {
-    return 'Completed'
-  }
-  
-  // Check if remaining balance is negative (excess payment)
-  if (transaction.updated_remaining_balance < 0) {
-    return 'Excess'
-  }
-  
-  return 'Pending'
 }
 
 async function loadGroups() {
@@ -595,86 +345,6 @@ input[type="date"]:focus, input[type="text"]:focus, select:focus {
 .submit-btn:not(:disabled):hover {
   background: linear-gradient(90deg, #1565c0 0%, #2196f3 100%);
 }
-.collection-table {
-  margin-top: 1rem;
-}
-.table-responsive {
-  overflow-x: auto;
-}
-.modern-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  background: #f8fafc;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 2px 8px rgba(44, 62, 80, 0.06);
-}
-th, td {
-  padding: 1rem 1.2rem;
-  text-align: left;
-  border-bottom: 1px solid #eaeaea;
-}
-th {
-  background: #e3f2fd;
-  color: #1a237e;
-  font-weight: 700;
-  font-size: 1.08rem;
-}
-tr:last-child td {
-  border-bottom: none;
-}
-tr:hover {
-  background: #e3f2fd44;
-  transition: background 0.2s;
-}
-.status {
-  padding: 0.4rem 1.1rem;
-  border-radius: 16px;
-  font-size: 1rem;
-  font-weight: 600;
-  display: inline-block;
-}
-.status.completed {
-  background: #dcfce7;
-  color: #166534;
-}
-.status.excess {
-  background: #f3e8ff;
-  color: #7c3aed;
-}
-.status.pending {
-  background: #fef3c7;
-  color: #92400e;
-}
-.summary.total-amount {
-  font-weight: bold;
-  margin-top: 1.2rem;
-  text-align: right;
-  font-size: 1.15em;
-  display: flex;
-  justify-content: flex-end;
-  gap: 2rem;
-}
-.total-value {
-  color: #1565c0;
-  font-size: 1.15em;
-  font-weight: 700;
-}
-.no-data {
-  text-align: center;
-  color: #888;
-  font-size: 1.15em;
-  padding: 2.5rem 0 1rem 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-.no-data-img {
-  width: 80px;
-  margin-bottom: 1rem;
-  opacity: 0.7;
-}
 .cs-dropdown {
   position: relative;
 }
@@ -750,120 +420,5 @@ tr:hover {
     flex-direction: column;
     gap: 1rem;
   }
-  th, td {
-    padding: 0.7rem 0.5rem;
-  }
-}
-
-/* Expandable installment styles */
-.installment-row {
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-.installment-row:hover {
-  background-color: #f0f7ff !important;
-}
-
-.expand-cell {
-  text-align: center;
-  padding: 0.5rem !important;
-}
-
-.expand-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  transition: all 0.3s ease;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.expand-button:hover {
-  transform: scale(1.1);
-  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-}
-
-.expand-button svg {
-  transition: transform 0.3s ease;
-}
-
-.expand-button.expanded {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-}
-
-.expand-button.expanded svg {
-  transform: rotate(180deg);
-}
-
-.expand-icon {
-  display: inline-block;
-  transition: transform 0.2s;
-  font-size: 0.8rem;
-  color: #666;
-}
-.expand-icon.expanded {
-  transform: rotate(180deg);
-}
-.transaction-details-row {
-  background-color: #fafbfc !important;
-}
-.transaction-details-cell {
-  padding: 0 !important;
-}
-.transaction-details {
-  padding: 1rem 2rem;
-  border-left: 3px solid #2980b9;
-  background: linear-gradient(to right, #f8f9fa, #ffffff);
-}
-.transaction-details h4 {
-  margin: 0 0 1rem 0;
-  color: #2c3e50;
-  font-size: 1.1rem;
-  font-weight: 600;
-}
-.transaction-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  background: #fff;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
-  margin-bottom: 1rem;
-}
-.transaction-table th {
-  background: #e8f4f8;
-  color: #2c3e50;
-  font-weight: 600;
-  font-size: 0.9rem;
-  padding: 0.7rem 1rem;
-}
-.transaction-table td {
-  padding: 0.7rem 1rem;
-  border-bottom: 1px solid #eee;
-}
-.transaction-table tr:last-child td {
-  border-bottom: none;
-}
-.transaction-table tr:hover {
-  background-color: #f8f9fa;
-}
-.no-transactions {
-  text-align: center;
-  color: #666;
-  font-style: italic;
-  padding: 1.5rem;
-}
-.transaction-summary {
-  text-align: right;
-  padding: 0.5rem 0;
-  color: #2c3e50;
-  font-size: 1rem;
-  border-top: 2px solid #e9ecef;
-  margin-top: 0.5rem;
 }
 </style>

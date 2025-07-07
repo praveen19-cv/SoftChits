@@ -292,13 +292,22 @@ export const useCollectionsStore = defineStore('collections', () => {
     try {
       loading.value = true;
       error.value = '';
-      const response = await api.post(`/collections/group/${groupId}/export-month/${month}`, {
-        monthly_subscription: monthlySubscription
-      });
+      
+      
+      const requestBody = { monthly_subscription: monthlySubscription };
+    
+      
+      const response = await api.post(`/collections/group/${groupId}/export-month/${month}`, requestBody);
       return response.data;
     } catch (err: any) {
-      error.value = err.response?.data?.error || 'Failed to export month payout';
-      throw err;
+      console.error('Export error:', err);
+      const errorMessage = err.response?.data?.error || 'Failed to export month payout';
+      error.value = errorMessage;
+      
+      // Create a custom error with the specific message for better handling
+      const customError = new Error(errorMessage);
+      customError.name = 'ExportError';
+      throw customError;
     } finally {
       loading.value = false;
     }
@@ -470,6 +479,37 @@ export const useCollectionsStore = defineStore('collections', () => {
     }
   }
 
+  // Get actual member count from group_members table
+  async function getGroupMembersCount(groupId: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      const response = await api.get(`/collections/group/${groupId}/members-count`);
+      return response.data;
+    } catch (err: any) {
+      error.value = err.response?.data?.error || 'Failed to get group members count';
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  // Fetch monthly subscription data for a group
+  async function fetchMonthlySubscriptions(groupId: number) {
+    try {
+      loading.value = true;
+      error.value = '';
+      
+      const response = await api.get(`/collection-balance/${groupId}/monthly-subscriptions`);
+      return response.data; // Returns array of { installment_number, monthly_subscription }
+    } catch (err: any) {
+      error.value = err.response?.data?.message || 'Failed to fetch monthly subscriptions';
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     collections,
     collectionBalances,
@@ -494,6 +534,8 @@ export const useCollectionsStore = defineStore('collections', () => {
     fetchPendingInstallmentsForCustomer,
     setMonthlySubscriptionExportStatus,
     performCollectionAdjustment,
-    getAdjustmentHistory
+    getAdjustmentHistory,
+    getGroupMembersCount,
+    fetchMonthlySubscriptions
   };
 });

@@ -41,25 +41,34 @@ router.get('/:groupId', async (req, res) => {
       return res.status(404).json({ error: 'Group not found' });
     }
 
-    // Build table name
+    // Build table names
     const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
+    const monthlySubscriptionTableName = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
     
-    // Check if table exists
-    const tableExists = await withRetry(() =>
+    // Check if tables exist
+    const balanceTableExists = await withRetry(() =>
       db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(balanceTableName)
     );
-    if (!tableExists) {
+    const subscriptionTableExists = await withRetry(() =>
+      db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(monthlySubscriptionTableName)
+    );
+    if (!balanceTableExists || !subscriptionTableExists) {
       return res.json([]);
     }
 
-    // Query all balances for this group with member names
+    // Query all balances for this group with member names and subscription amount
     // Support optional customerId filtering
     const customerId = req.query.customerId ? Number(req.query.customerId) : null;
     
     let query = `
-      SELECT cb.*, m.name as member_name
+      SELECT 
+        cb.*, 
+        m.name as member_name, 
+        ms.monthly_subscription as subscription_amount,
+        ms.monthly_subscription as monthly_subscription  -- Explicitly include monthly_subscription
       FROM ${balanceTableName} cb
       LEFT JOIN members m ON cb.member_id = m.id
+      LEFT JOIN ${monthlySubscriptionTableName} ms ON cb.installment_number = ms.month_number
       WHERE cb.group_id = ?
     `;
     let params = [groupId];
@@ -75,6 +84,15 @@ router.get('/:groupId', async (req, res) => {
       db.prepare(query).all(...params)
     );
     console.log('Balances query executed successfully.');
+    // Add debug logging to verify the monthly_subscription values
+    if (balances.length > 0) {
+      console.log(`Sample balance record fields: ${Object.keys(balances[0] as object).join(', ')}`);
+      console.log(`First few balances with subscription data:`);
+      balances.slice(0, 3).forEach((balance, index) => {
+        const b = balance as Record<string, any>;
+        console.log(`Balance ${index + 1} - Installment: ${b.installment_number}, monthly_subscription: ${b.monthly_subscription}, subscription_amount: ${b.subscription_amount}`);
+      });
+    }
     res.json(balances);
   } catch (error) {
     console.error('Error fetching collection balances:', error);
@@ -125,7 +143,7 @@ router.get('/:groupId/customer-sheet', async (req, res) => {
       `).all(groupId)
     );
 
-    console.log('Customer sheet query executed successfully.');
+   
     res.json(customerSheetData);
   } catch (error) {
     console.error('Error fetching customer sheet data:', error);
@@ -377,6 +395,48 @@ router.get('/:groupId/incomplete', async (req, res) => {
   } catch (error) {
     console.error('Error fetching incomplete collection balances:', error);
     res.status(500).json({ error: 'Failed to fetch incomplete collection balances', details: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// GET /api/collection-balance/:groupId/monthly-subscriptions
+router.get('/:groupId/monthly-subscriptions', async (req, res) => {
+  try {
+    const groupId = Number(req.params.groupId);
+    const db = getReadDb();
+
+    // Get group details
+    const group: any = await withRetry(() =>
+      db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId)
+    );
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Build table name for monthly subscriptions
+    const monthlySubscriptionTableName = GroupTableService.getTableName(groupId, group.name, 'monthly_subscription');
+    
+    // Check if table exists
+    const tableExists = await withRetry(() =>
+      db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(monthlySubscriptionTableName)
+    );
+    
+    if (!tableExists) {
+      return res.json([]); // Return empty array if table doesn't exist
+    }
+
+    // Query all monthly subscriptions for this group
+    const subscriptions = await withRetry(() =>
+      db.prepare(`
+        SELECT month_number as installment_number, monthly_subscription
+        FROM ${monthlySubscriptionTableName}
+        ORDER BY month_number
+      `).all()
+    );
+    
+    res.json(subscriptions);
+  } catch (error) {
+    console.error('Error fetching monthly subscriptions:', error);
+    res.status(500).json({ error: 'Failed to fetch monthly subscriptions', details: error instanceof Error ? error.message : String(error) });
   }
 });
 

@@ -1489,23 +1489,25 @@ router.post('/adjust', async (req, res) => {
 
       // 3. Calculate new balances
       const newFromRemainingBalance = fromBalance.remaining_balance + amount; // Less negative (reducing excess)
+      const newFromTotalPaid = fromBalance.total_paid - amount; // Decrease total_paid by transferred amount
       const newToRemainingBalance = Math.max(0, toBalance.remaining_balance - amount); // Reducing shortage
-      const newTotalPaid = toBalance.total_paid + amount;
+      const newToTotalPaid = toBalance.total_paid + amount;
       const isToCompleted = newToRemainingBalance === 0;
+      const isFromCompleted = newFromRemainingBalance === 0;
 
-      // 4. Update source balance
+      // 4. Update source balance - decrease total_paid and adjust remaining_balance
       db.prepare(`
         UPDATE ${fromBalanceTableName} 
-        SET remaining_balance = ?, last_updated = CURRENT_TIMESTAMP
+        SET total_paid = ?, remaining_balance = ?, is_completed = ?, last_updated = CURRENT_TIMESTAMP
         WHERE member_id = ? AND installment_number = ? AND group_id = ?
-      `).run(newFromRemainingBalance, customerId, fromInstallmentNumber, fromGroupId);
+      `).run(newFromTotalPaid, newFromRemainingBalance, isFromCompleted ? 1 : 0, customerId, fromInstallmentNumber, fromGroupId);
 
       // 5. Update target balance
       db.prepare(`
         UPDATE ${toBalanceTableName} 
         SET total_paid = ?, remaining_balance = ?, is_completed = ?, last_updated = CURRENT_TIMESTAMP
         WHERE member_id = ? AND installment_number = ? AND group_id = ?
-      `).run(newTotalPaid, newToRemainingBalance, isToCompleted ? 1 : 0, customerId, toInstallmentNumber, toGroupId);
+      `).run(newToTotalPaid, newToRemainingBalance, isToCompleted ? 1 : 0, customerId, toInstallmentNumber, toGroupId);
 
       // 6. Record the adjustment as collections with adjustment markers
       const collectionDate = adjustmentDate || new Date().toISOString().slice(0, 10);
@@ -1519,14 +1521,22 @@ router.post('/adjust', async (req, res) => {
 
       if (existingFromCollection) {
         // Update existing collection record
-        db.prepare(`
-          UPDATE ${fromCollectionTableName} 
-          SET collection_amount = collection_amount - ?, 
-              updated_remaining_balance = ?
-          WHERE id = ?
-        `).run(amount, newFromRemainingBalance, existingFromCollection.id);
+        const newCollectionAmount = existingFromCollection.collection_amount - amount;
+        
+        if (newCollectionAmount === 0) {
+          // Remove the collection record if amount becomes 0
+          db.prepare(`DELETE FROM ${fromCollectionTableName} WHERE id = ?`).run(existingFromCollection.id);
+        } else {
+          // Update existing collection record
+          db.prepare(`
+            UPDATE ${fromCollectionTableName} 
+            SET collection_amount = ?, 
+                updated_remaining_balance = ?
+            WHERE id = ?
+          `).run(newCollectionAmount, newFromRemainingBalance, existingFromCollection.id);
+        }
       } else {
-        // Create new adjustment record
+        // Create new adjustment record (negative amount to represent transfer out)
         db.prepare(`
           INSERT INTO ${fromCollectionTableName} (
             group_id, member_id, installment_number, collection_amount, 
@@ -1548,15 +1558,23 @@ router.post('/adjust', async (req, res) => {
 
       if (existingToCollection) {
         // Update existing collection record
-        db.prepare(`
-          UPDATE ${toCollectionTableName} 
-          SET collection_amount = collection_amount + ?, 
-              is_completed = ?,
-              updated_remaining_balance = ?
-          WHERE id = ?
-        `).run(amount, isToCompleted ? 1 : 0, newToRemainingBalance, existingToCollection.id);
+        const newCollectionAmount = existingToCollection.collection_amount + amount;
+        
+        if (newCollectionAmount === 0) {
+          // Remove the collection record if amount becomes 0 (shouldn't happen for TO but for safety)
+          db.prepare(`DELETE FROM ${toCollectionTableName} WHERE id = ?`).run(existingToCollection.id);
+        } else {
+          // Update existing collection record
+          db.prepare(`
+            UPDATE ${toCollectionTableName} 
+            SET collection_amount = ?, 
+                is_completed = ?,
+                updated_remaining_balance = ?
+            WHERE id = ?
+          `).run(newCollectionAmount, isToCompleted ? 1 : 0, newToRemainingBalance, existingToCollection.id);
+        }
       } else {
-        // Create new adjustment record
+        // Create new adjustment record (positive amount to represent transfer in)
         db.prepare(`
           INSERT INTO ${toCollectionTableName} (
             group_id, member_id, installment_number, collection_amount, 

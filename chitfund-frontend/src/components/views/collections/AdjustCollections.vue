@@ -358,10 +358,12 @@ const availableToGroups = computed(() => {
 
 const fromInstallments = computed(() => {
   if (!adjustmentForm.value.fromGroupId) return []
-  return customerInstallmentData.value.filter(
+  const filtered = customerInstallmentData.value.filter(
     installment => installment.groupId === parseInt(adjustmentForm.value.fromGroupId) && 
                   installment.excessShortage > 0 // Only installments with actual excess (positive excessShortage)
   )
+
+  return filtered
 })
 
 const toInstallments = computed(() => {
@@ -615,13 +617,6 @@ async function loadCustomerData() {
         // Filter balances for this specific customer
         const customerBalances = balancesResponse.filter((balance: any) => balance.member_id === selectedCustomerId.value)
 
-        console.log(`Group ${groupId} - Customer balances:`, customerBalances.map((b: any) => ({
-          installment: b.installment_number,
-          total_paid: b.total_paid,
-          remaining_balance: b.remaining_balance,
-          monthly_subscription: b.monthly_subscription,
-          subscription_amount: b.subscription_amount
-        })))
 
         customerBalances.forEach((balance: any) => {
           // Get subscription amount for this installment
@@ -674,20 +669,14 @@ async function loadCustomerData() {
 
     customerInstallmentData.value = allInstallmentData
     
+ 
+    
     // Debug: Log the calculated excess/shortage data
-    console.log('Final installment data with excess/shortage:', allInstallmentData.map((inst: any) => ({
-      group: inst.groupName,
-      installment: inst.installmentNumber,
-      totalPaid: inst.totalPaid,
-      remainingBalance: inst.remainingBalance,
-      excessShortage: inst.excessShortage,
-      status: inst.excessShortage > 0 ? 'excess' : inst.excessShortage < 0 ? 'shortage' : 'exact'
-    })))
+
     
     const excessInstallments = allInstallmentData.filter((inst: any) => inst.excessShortage > 0)
     const shortageInstallments = allInstallmentData.filter((inst: any) => inst.excessShortage < 0)
     
-    console.log(`Found ${excessInstallments.length} installments with excess and ${shortageInstallments.length} with shortage`)
     
     if (excessInstallments.length === 0) {
       showErrorNotification('No installments with excess payment found for this customer. Excess payments occur when the remaining_balance is negative (customer has overpaid).')

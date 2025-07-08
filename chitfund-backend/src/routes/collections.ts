@@ -172,7 +172,7 @@ router.get('/:groupId/balances', async (req, res) => {
     }
 
     // Use existing balance table with proper case
-    const balanceTableName = `collection_balance_${groupId}_${group.name.toUpperCase()}`;
+    const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
     
 
     // Check if table exists
@@ -259,8 +259,8 @@ router.post('/', async (req, res) => {
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
     }
-    const collectionTableName = `collection_${group_id}_${group.name.toUpperCase()}`;
-    const balanceTableName = `collection_balance_${group_id}_${group.name.toUpperCase()}`;
+    const collectionTableName = GroupTableService.getTableName(groupId, group.name, 'collection');
+    const balanceTableName = GroupTableService.getTableName(groupId, group.name, 'collection_balance');
     
     
     
@@ -298,9 +298,8 @@ router.post('/', async (req, res) => {
         // The excess amount stays with this installment as negative remaining_balance
         const payAmount = amount;
         const newRemainingBalance = currentBalance.remaining_balance - payAmount;
-        // Mark as completed if the amount paid is >= the remaining balance
-        const isCompleted = payAmount >= currentBalance.remaining_balance ? 1 : 0;
-
+        // Mark as completed only if the remaining balance is exactly 0 (no excess)
+        const isCompleted = newRemainingBalance === 0 ? 1 : 0;
         // Check if a collection already exists for this combination
         const existingCollection = db.prepare(`
           SELECT id, collection_amount FROM ${collectionTableName}
@@ -402,7 +401,7 @@ router.post('/', async (req, res) => {
           
           const payAmount = Math.min(remainingAmount, currentBalance.remaining_balance);
           const newRemainingBalance = currentBalance.remaining_balance - payAmount;
-          const isCompleted = newRemainingBalance <= 0 ? 1 : 0;
+          const isCompleted = newRemainingBalance === 0 ? 1 : 0; // Only complete when exactly 0
           
           // Check if a collection already exists for this combination
           const existingCollection = db.prepare(`
@@ -435,20 +434,6 @@ router.post('/', async (req, res) => {
               currentBalance.remaining_balance,
               currentBalance.is_completed ? 1 : 0,
               newRemainingBalance
-            );
-          }
-          
-          // If remaining_balance is now 0, update is_completed to 1 for this row
-          if (newRemainingBalance === 0) {
-            db.prepare(`
-              UPDATE ${collectionTableName}
-              SET is_completed = 1
-              WHERE group_id = ? AND member_id = ? AND installment_number = ? AND collection_date = ?
-            `).run(
-              groupId,
-              memberId,
-              currentInstallment,
-              collection_date
             );
           }
           
@@ -556,8 +541,8 @@ router.put('/:id', async (req, res) => {
       db.prepare(`
         UPDATE ${tableName} 
         SET collection_amount = ?,
-            remaining_balance = remaining_balance + ?,
-            is_completed = remaining_balance + ? <= 0
+            updated_remaining_balance = updated_remaining_balance + ?,
+            is_completed = CASE WHEN updated_remaining_balance + ? <= 0 THEN 1 ELSE 0 END
         WHERE id = ?
       `).run(
         collection_amount,
@@ -571,7 +556,7 @@ router.put('/:id', async (req, res) => {
         UPDATE ${balanceTableName}
         SET total_paid = total_paid + ?,
             remaining_balance = remaining_balance - ?,
-            is_completed = remaining_balance - ? <= 0,
+            is_completed = CASE WHEN remaining_balance - ? <= 0 THEN 1 ELSE 0 END,
             last_updated = CURRENT_TIMESTAMP
         WHERE group_id = ? AND member_id = ? AND installment_number = ?
       `).run(
@@ -628,7 +613,7 @@ router.delete('/:id', async (req, res) => {
         UPDATE ${balanceTableName}
         SET total_paid = total_paid - ?,
             remaining_balance = remaining_balance + ?,
-            is_completed = false,
+            is_completed = 0,
             last_updated = CURRENT_TIMESTAMP
         WHERE group_id = ? AND member_id = ? AND installment_number = ?
       `).run(
@@ -1492,8 +1477,8 @@ router.post('/adjust', async (req, res) => {
       const newFromTotalPaid = fromBalance.total_paid - amount; // Decrease total_paid by transferred amount
       const newToRemainingBalance = Math.max(0, toBalance.remaining_balance - amount); // Reducing shortage
       const newToTotalPaid = toBalance.total_paid + amount;
-      const isToCompleted = newToRemainingBalance === 0;
-      const isFromCompleted = newFromRemainingBalance === 0;
+      const isToCompleted = newToRemainingBalance === 0; // Completed only when exactly 0
+      const isFromCompleted = newFromRemainingBalance === 0; // Completed only when exactly 0
 
       // 4. Update source balance - decrease total_paid and adjust remaining_balance
       db.prepare(`

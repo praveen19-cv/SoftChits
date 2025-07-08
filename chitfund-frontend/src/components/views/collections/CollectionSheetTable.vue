@@ -8,6 +8,7 @@ import InstallmentBalanceDisplay from './InstallmentBalanceDisplay.vue'
 const props = defineProps<{
   collectionSheet: CollectionSheetRow[]
   memberBalances: CollectionBalance[]
+  allMemberBalances?: CollectionBalance[] // All balances including completed ones
   monthlySubscription: number
   onInstallmentChange: (row: CollectionSheetRow) => void
   onAmountChange: (row: CollectionSheetRow) => void
@@ -193,6 +194,7 @@ function handleAmountFocus(row: CollectionSheetRow) {
                 :installment-numbers="row.installment"
                 :collection-amount="parseFloat(row.amount) || 0"
                 :member-balances="props.memberBalances"
+                :all-member-balances="props.allMemberBalances"
                 :monthly-subscription="props.monthlySubscription"
                 :is-after-submission="props.isAfterSubmission"
                 :submitted-collections="props.submittedCollections"

@@ -117,26 +117,40 @@ export class DailyCollectionSummaryService {
       });
 
       if (existingSummary) {
-        // Update existing summary
-        await withRetry(() => {
-          db.prepare(`
-            UPDATE ${summaryTableName}
-            SET 
-              total_amount = ?,
-              total_members_paid = ?,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `).run(dailyStats.total_amount, dailyStats.total_members_paid, existingSummary.id);
-        });
+        // Check if we should delete the record (when totals are 0)
+        if (dailyStats.total_amount === 0 && dailyStats.total_members_paid === 0) {
+          // Delete the summary record when there are no collections for this date
+          await withRetry(() => {
+            db.prepare(`
+              DELETE FROM ${summaryTableName}
+              WHERE id = ?
+            `).run(existingSummary.id);
+          });
+          console.log(`Deleted daily collection summary for date ${collectionDate} (no collections remaining)`);
+        } else {
+          // Update existing summary
+          await withRetry(() => {
+            db.prepare(`
+              UPDATE ${summaryTableName}
+              SET 
+                total_amount = ?,
+                total_members_paid = ?,
+                updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `).run(dailyStats.total_amount, dailyStats.total_members_paid, existingSummary.id);
+          });
+        }
       } else {
-        // Insert new summary
-        await withRetry(() => {
-          db.prepare(`
-            INSERT INTO ${summaryTableName} (
-              collection_date, group_id, total_amount, total_members_paid, collection_agent_id
-            ) VALUES (?, ?, ?, ?, 1)
-          `).run(collectionDate, groupId, dailyStats.total_amount, dailyStats.total_members_paid);
-        });
+        // Only insert new summary if there are actual collections (not when totals are 0)
+        if (dailyStats.total_amount > 0 || dailyStats.total_members_paid > 0) {
+          await withRetry(() => {
+            db.prepare(`
+              INSERT INTO ${summaryTableName} (
+                collection_date, group_id, total_amount, total_members_paid, collection_agent_id
+              ) VALUES (?, ?, ?, ?, 1)
+            `).run(collectionDate, groupId, dailyStats.total_amount, dailyStats.total_members_paid);
+          });
+        }
       }
 
       

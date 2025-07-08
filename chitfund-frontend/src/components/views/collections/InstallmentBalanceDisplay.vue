@@ -43,11 +43,12 @@ interface Props {
   memberId: number
   installmentNumbers: string // e.g., "1c,2,3" or "3:3400,4:5500"
   collectionAmount: number
-  memberBalances: CollectionBalance[]
+  memberBalances: CollectionBalance[] // Only incomplete balances
   monthlySubscription: number
   isAfterSubmission?: boolean // New prop to indicate data source
   submittedCollections?: any[] // Collection records after submission
   installmentAmounts?: { [key: number]: number } // Specific amounts per installment
+  allMemberBalances?: CollectionBalance[] // All balances (including completed) for checking completion status
 }
 
 interface BalanceDisplay {
@@ -158,7 +159,19 @@ function getBalancesFromBalanceData(parseResult: {
     !isAutoCalculatedPattern(parseResult.installments, memberBalances)
   
   for (const instNum of parseResult.installments) {
-    const balance = memberBalances.find(b => b.installment_number === instNum)
+    // Check if this installment exists in all balances (complete or incomplete)
+    const allBalance = props.allMemberBalances?.find(b => 
+      b.member_id === props.memberId && b.installment_number === instNum
+    )
+    
+    // Skip truly completed installments (is_completed = 1 AND remaining_balance = 0)
+    // But show installments with excess (is_completed = 0 AND remaining_balance < 0)
+    if (allBalance && allBalance.is_completed && allBalance.remaining_balance === 0) {
+      continue // Don't show truly completed installments (no excess)
+    }
+    
+    // Find the balance - now excess installments will be in memberBalances since is_completed = 0
+    const balance = memberBalances.find(b => b.installment_number === instNum) || allBalance
     const specificAmount = parseResult.specificAmounts[instNum]
     
     if (balance) {
@@ -214,8 +227,10 @@ function getBalancesFromBalanceData(parseResult: {
         status,
         collectionAmount: Math.round(collectionAmount * 100) / 100 // Round to 2 decimal places
       })
-    } else {
-      // If no balance record exists, use monthly subscription as original balance
+    } else if (!allBalance) {
+      // Only show if no balance record exists at all (new installment)
+      // If balance exists and is completed, we already handled it above
+      
       const originalBalance = props.monthlySubscription
       let updatedBalance = originalBalance
       let collectionAmount = 0

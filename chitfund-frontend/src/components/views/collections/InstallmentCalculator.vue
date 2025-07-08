@@ -48,10 +48,16 @@ const isUserEdited = ref(false)
 const isAutoCalculated = ref(true)
 
 const displayValue = computed(() => {
+  // Always show the current modelValue if user has edited or if there's content
+  if (isUserEdited.value || props.modelValue) {
+    return props.modelValue
+  }
+  
   // If auto-calculated and user hasn't edited AND no amount entered, show empty string (so placeholder shows)
   if (isAutoCalculated.value && !isUserEdited.value && props.collectionAmount <= 0) {
     return ''
   }
+  
   // If amount is entered and installments are auto-calculated, show the calculated value
   return props.modelValue
 })
@@ -168,11 +174,9 @@ function handleInstallmentInput(event: Event) {
   const target = event.target as HTMLInputElement
   const value = target.value
   
-  // Mark as user-edited only if there's actual input
-  if (value.trim()) {
-    isUserEdited.value = true
-    isAutoCalculated.value = false
-  }
+  // Mark as user-edited whenever user types anything (including clearing the field)
+  isUserEdited.value = true
+  isAutoCalculated.value = false
   
   // Parse and handle specific amounts format
   parseAndEmitInstallmentData(value)
@@ -216,27 +220,37 @@ function parseAndEmitInstallmentData(value: string) {
 }
 
 function handleInstallmentBlur() {
+  // Don't reset to auto-calculated on blur - preserve user input
+  // Only reset if the field is completely empty
   const value = props.modelValue.trim()
   
   if (!value) {
-    // Reset to auto-calculated if empty
+    // Only reset to auto-calculated if truly empty
     isUserEdited.value = false
     isAutoCalculated.value = true
     const autoValue = calculateAutoInstallment()
     emit('update:modelValue', autoValue)
     emit('installment-change', autoValue)
   }
+  // If there's any value, keep it as user-edited
 }
 
 function handleInstallmentFocus() {
-  // If it's auto-calculated (either placeholder or filled), populate the field for editing
-  if (isAutoCalculated.value && !isUserEdited.value) {
-    const autoValue = calculateAutoInstallment()
-    if (autoValue) {
-      emit('update:modelValue', autoValue)
-      emit('installment-change', autoValue)
+  // When user focuses on the field, mark it as user-edited to prevent auto-override
+  // Only populate auto-value if the field is currently empty
+  if (!props.modelValue || props.modelValue.trim() === '') {
+    if (isAutoCalculated.value && !isUserEdited.value) {
+      const autoValue = calculateAutoInstallment()
+      if (autoValue) {
+        emit('update:modelValue', autoValue)
+        emit('installment-change', autoValue)
+      }
     }
   }
+  
+  // Mark as user-edited once focused to prevent auto-override
+  isUserEdited.value = true
+  isAutoCalculated.value = false
 }
 
 // Watch for collection amount changes to auto-calculate installments
@@ -251,6 +265,11 @@ watch([() => props.collectionAmount, () => props.memberBalances, () => props.isA
     return
   }
   
+  // If user has manually edited the installment field, never override it
+  if (isUserEdited.value) {
+    return
+  }
+  
   // If amount changed from external source (not user editing), reset auto-calculation
   if (newAmount !== oldAmount) {
     // If amount is cleared or set to 0, clear installment and reset state
@@ -262,9 +281,8 @@ watch([() => props.collectionAmount, () => props.memberBalances, () => props.isA
       return
     }
     
-    // If amount is set to a positive value, reset to auto-calculation mode
-    if (newAmount > 0) {
-      isUserEdited.value = false
+    // If amount is set to a positive value, reset to auto-calculation mode ONLY if user hasn't edited
+    if (newAmount > 0 && !isUserEdited.value) {
       isAutoCalculated.value = true
     }
   }

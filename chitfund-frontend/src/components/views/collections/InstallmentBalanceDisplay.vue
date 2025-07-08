@@ -151,9 +151,11 @@ function getBalancesFromBalanceData(parseResult: {
   // Check if we have manually specified installments
   // Treat as manual if:
   // 1. Has specific amounts (with :) OR
-  // 2. Single installment with 'c' suffix (e.g., "2c")
+  // 2. Single installment with 'c' suffix (e.g., "2c") OR  
+  // 3. Installments don't follow auto-calculated pattern (not starting from first unpaid)
   const isSingleInstallmentWithC = props.installmentNumbers.includes('c') && parseResult.installments.length === 1
-  const hasManualInstallments = parseResult.hasSpecificAmounts || isSingleInstallmentWithC
+  const hasManualInstallments = parseResult.hasSpecificAmounts || isSingleInstallmentWithC || 
+    !isAutoCalculatedPattern(parseResult.installments, memberBalances)
   
   for (const instNum of parseResult.installments) {
     const balance = memberBalances.find(b => b.installment_number === instNum)
@@ -168,30 +170,36 @@ function getBalancesFromBalanceData(parseResult: {
       if (parseResult.hasSpecificAmounts && specificAmount !== undefined) {
         // Use specific amount for this installment - apply exactly what user specified
         collectionAmount = specificAmount
-        updatedBalance = Math.round(originalBalance - collectionAmount)
+        updatedBalance = originalBalance - collectionAmount
       } else if (isSingleInstallmentWithC) {
         // Single installment with 'c' - apply ALL amount to this installment (allow excess)
         collectionAmount = props.collectionAmount
-        updatedBalance = Math.round(originalBalance - collectionAmount)
-        console.log(`Single installment with C (${instNum}): original=${originalBalance}, collection=${collectionAmount}, updated=${updatedBalance}`)
+        updatedBalance = originalBalance - collectionAmount
       } else if (hasManualInstallments) {
-        // Multiple installments specified - distribute proportionally based on remaining balance
-        const totalOriginalBalance = parseResult.installments.reduce((sum, instNum) => {
-          const bal = memberBalances.find(b => b.installment_number === instNum)
-          return sum + (bal ? bal.remaining_balance : props.monthlySubscription)
-        }, 0)
-        
-        if (totalOriginalBalance > 0) {
-          collectionAmount = Math.round((originalBalance / totalOriginalBalance) * props.collectionAmount)
+        // Manual installments specified - handle based on count
+        if (parseResult.installments.length === 1) {
+          // Single manual installment - apply full amount to this installment
+          collectionAmount = props.collectionAmount
+          updatedBalance = originalBalance - collectionAmount
         } else {
-          collectionAmount = Math.round(props.collectionAmount / parseResult.installments.length)
+          // Multiple manual installments - distribute proportionally based on their remaining balances
+          const totalOriginalBalance = parseResult.installments.reduce((sum, instNum) => {
+            const bal = memberBalances.find(b => b.installment_number === instNum)
+            return sum + (bal ? Math.max(bal.remaining_balance, 0) : props.monthlySubscription)
+          }, 0)
+          
+          if (totalOriginalBalance > 0) {
+            collectionAmount = (Math.max(originalBalance, 0) / totalOriginalBalance) * props.collectionAmount
+          } else {
+            collectionAmount = props.collectionAmount / parseResult.installments.length
+          }
+          updatedBalance = originalBalance - collectionAmount
         }
-        updatedBalance = Math.round(originalBalance - collectionAmount)
       } else if (remainingAmount > 0) {
         // Auto-distribute amount (sequential distribution)
         if (originalBalance > 0) {
           collectionAmount = Math.min(remainingAmount, originalBalance)
-          updatedBalance = Math.round(originalBalance - collectionAmount)
+          updatedBalance = originalBalance - collectionAmount
           remainingAmount -= collectionAmount
         }
       }
@@ -201,33 +209,30 @@ function getBalancesFromBalanceData(parseResult: {
       results.push({
         installmentNumber: instNum,
         originalBalance,
-        updatedBalance,
+        updatedBalance: Math.round(updatedBalance * 100) / 100, // Round to 2 decimal places
         isCompleted: updatedBalance <= 0,
         status,
-        collectionAmount
+        collectionAmount: Math.round(collectionAmount * 100) / 100 // Round to 2 decimal places
       })
     } else {
-      // If no balance record exists, assume monthly subscription amount
+      // If no balance record exists, use monthly subscription as original balance
       const originalBalance = props.monthlySubscription
       let updatedBalance = originalBalance
       let collectionAmount = 0
 
       if (parseResult.hasSpecificAmounts && specificAmount !== undefined) {
-        // Use specific amount for this installment
         collectionAmount = specificAmount
-        updatedBalance = Math.round(originalBalance - collectionAmount)
+        updatedBalance = originalBalance - collectionAmount
       } else if (hasManualInstallments) {
-        // Manual installments: distribute amount
         if (parseResult.installments.length === 1) {
           collectionAmount = props.collectionAmount
         } else {
-          collectionAmount = Math.round(props.collectionAmount / parseResult.installments.length)
+          collectionAmount = props.collectionAmount / parseResult.installments.length
         }
-        updatedBalance = Math.round(originalBalance - collectionAmount)
+        updatedBalance = originalBalance - collectionAmount
       } else if (remainingAmount > 0) {
-        // Auto-distribute amount
         collectionAmount = Math.min(remainingAmount, originalBalance)
-        updatedBalance = Math.round(originalBalance - collectionAmount)
+        updatedBalance = originalBalance - collectionAmount
         remainingAmount -= collectionAmount
       }
 
@@ -236,10 +241,10 @@ function getBalancesFromBalanceData(parseResult: {
       results.push({
         installmentNumber: instNum,
         originalBalance,
-        updatedBalance,
+        updatedBalance: Math.round(updatedBalance * 100) / 100,
         isCompleted: updatedBalance <= 0,
         status,
-        collectionAmount
+        collectionAmount: Math.round(collectionAmount * 100) / 100
       })
     }
   }
@@ -292,6 +297,33 @@ function getBalancesFromCollectionData(parseResult: {
   }
 
   return results
+}
+
+// Helper function to detect if installments follow auto-calculated pattern
+function isAutoCalculatedPattern(installments: number[], memberBalances: CollectionBalance[]): boolean {
+  if (installments.length === 0) return false
+  
+  // Find the first unpaid installment for this member
+  const unpaidBalances = memberBalances
+    .filter(b => b.member_id === props.memberId && !b.is_completed && b.remaining_balance > 0)
+    .sort((a, b) => a.installment_number - b.installment_number)
+  
+  if (unpaidBalances.length === 0) return false
+  
+  const firstUnpaid = unpaidBalances[0].installment_number
+  const sortedInstallments = [...installments].sort((a, b) => a - b)
+  
+  // Auto-calculated pattern should start from the first unpaid installment
+  if (sortedInstallments[0] !== firstUnpaid) return false
+  
+  // And should be consecutive
+  for (let i = 1; i < sortedInstallments.length; i++) {
+    if (sortedInstallments[i] !== sortedInstallments[i-1] + 1) {
+      return false
+    }
+  }
+  
+  return true
 }
 </script>
 

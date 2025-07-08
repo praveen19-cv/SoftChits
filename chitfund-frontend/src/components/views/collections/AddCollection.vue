@@ -563,8 +563,6 @@ async function handleAmountChange(row: CollectionSheetRow) {
       const specificFormat = installments.map((inst, i) => `${inst}:${amounts[i]}`).join(',')
       row.installment = specificFormat
       
-      
-      
       return // Exit early since we've handled this case
     }
   }
@@ -573,7 +571,18 @@ async function handleAmountChange(row: CollectionSheetRow) {
   const amount = parseFloat(row.amount);
   if (isNaN(amount) || amount < 0) {
     row.amount = '';
-    row.installment = ''; // Clear installment when amount is invalid
+    // Only clear installment if user hasn't manually entered one
+    if (!row.installment || row.installment.trim() === '') {
+      row.installment = '';
+    }
+    return;
+  }
+  
+  // If user has manually entered an installment, preserve it
+  // Don't clear installmentAmounts if user has a manual installment entry
+  if (row.installment && row.installment.trim() && !row.installment.includes(':')) {
+    // User has manually entered installments like "4" or "3,4" - preserve it
+    // Don't clear specific amounts unless necessary
     return;
   }
   
@@ -830,12 +839,14 @@ async function handleSubmit() {
             return parseInt(cleanInst)
           }).filter(num => !isNaN(num))
 
-          // Check if this is a single installment with 'c' suffix (excess should stay in that installment)
-          const isSingleInstallmentWithC = row.installment.includes('c') && installmentNumbers.length === 1
-          const isManualSpecification = isSingleInstallmentWithC // Use allow_excess for single installment with 'c'
+          // Check if this is a single installment (with or without 'c' suffix)
+          // If user enters just "4", they want the full amount to go to installment 4 only
+          const isSingleInstallment = installmentNumbers.length === 1
+          const isSingleInstallmentWithC = row.installment.includes('c') && isSingleInstallment
+          const isManualSpecification = isSingleInstallment // Use allow_excess for any single installment specification
           
-          // Use the first (lowest) installment number as the starting point
-          const startingInstallmentNumber = Math.min(...installmentNumbers) || 1
+          // Use the specified installment number for single installments, or the first (lowest) for multiple
+          const startingInstallmentNumber = isSingleInstallment ? installmentNumbers[0] : (Math.min(...installmentNumbers) || 1)
 
           const payload = {
             group_id: Number(collection.value.group_id),

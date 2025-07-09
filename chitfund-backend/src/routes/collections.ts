@@ -298,7 +298,7 @@ router.post('/', async (req, res) => {
         // The excess amount stays with this installment as negative remaining_balance
         const payAmount = amount;
         const newRemainingBalance = currentBalance.remaining_balance - payAmount;
-        // Mark as completed only if the remaining balance is exactly 0 (no excess)
+        // Mark as completed ONLY when remaining balance is exactly 0
         const isCompleted = newRemainingBalance === 0 ? 1 : 0;
         // Check if a collection already exists for this combination
         const existingCollection = db.prepare(`
@@ -329,7 +329,7 @@ router.post('/', async (req, res) => {
             currentInstallment,
             payAmount,
             currentBalance.remaining_balance,
-            currentBalance.is_completed ? 1 : 0,
+            isCompleted,
             newRemainingBalance
           );
         }
@@ -401,7 +401,7 @@ router.post('/', async (req, res) => {
           
           const payAmount = Math.min(remainingAmount, currentBalance.remaining_balance);
           const newRemainingBalance = currentBalance.remaining_balance - payAmount;
-          const isCompleted = newRemainingBalance === 0 ? 1 : 0; // Only complete when exactly 0
+          const isCompleted = newRemainingBalance === 0 ? 1 : 0; // Complete ONLY when exactly 0
           
           // Check if a collection already exists for this combination
           const existingCollection = db.prepare(`
@@ -432,7 +432,7 @@ router.post('/', async (req, res) => {
               currentInstallment,
               payAmount,
               currentBalance.remaining_balance,
-              currentBalance.is_completed ? 1 : 0,
+              isCompleted,
               newRemainingBalance
             );
           }
@@ -542,7 +542,7 @@ router.put('/:id', async (req, res) => {
         UPDATE ${tableName} 
         SET collection_amount = ?,
             updated_remaining_balance = updated_remaining_balance + ?,
-            is_completed = CASE WHEN updated_remaining_balance + ? <= 0 THEN 1 ELSE 0 END
+            is_completed = CASE WHEN updated_remaining_balance + ? = 0 THEN 1 ELSE 0 END
         WHERE id = ?
       `).run(
         collection_amount,
@@ -556,7 +556,7 @@ router.put('/:id', async (req, res) => {
         UPDATE ${balanceTableName}
         SET total_paid = total_paid + ?,
             remaining_balance = remaining_balance - ?,
-            is_completed = CASE WHEN remaining_balance - ? <= 0 THEN 1 ELSE 0 END,
+            is_completed = CASE WHEN remaining_balance - ? = 0 THEN 1 ELSE 0 END,
             last_updated = CURRENT_TIMESTAMP
         WHERE group_id = ? AND member_id = ? AND installment_number = ?
       `).run(

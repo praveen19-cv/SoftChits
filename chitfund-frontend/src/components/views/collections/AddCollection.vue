@@ -945,7 +945,7 @@ watch([
     return;
   }
   
-  // When date changes and we have both group and date, reload existing collections
+  // When date changes and we have both group and date, clear the table instead of auto-loading
   if (newDate !== oldDate) {
     errorMessage.value = '';
     isAfterSubmission.value = false;
@@ -955,23 +955,18 @@ watch([
     if (newDate) {
       dateInput.value = formatDateForDisplay(newDate);
       
-      // If we have both group and date, reload the collection data
-      if (newGroupId && collectionSheet.value.length > 0) {
-        await loadExistingCollections();
+      // Clear the collection sheet when date changes - user must click "Load Members" to reload
+      if (collectionSheet.value.length > 0) {
+        collectionSheet.value = [];
+        originalCollectionSheet.value = [];
+        collectionBalances.value = [];
       }
     } else {
       dateInput.value = '';
-      // If date is cleared, reset to fresh state but keep the member data
-      if (collectionSheet.value.length > 0) {
-        collectionSheet.value = collectionSheet.value.map(row => ({
-          ...row,
-          amount: '',
-          installment: '',
-          id: undefined,
-          installmentAmounts: {}
-        }));
-        saveOriginalState();
-      }
+      // If date is cleared, clear everything
+      collectionSheet.value = [];
+      originalCollectionSheet.value = [];
+      collectionBalances.value = [];
     }
   }
 });

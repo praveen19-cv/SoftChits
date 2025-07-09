@@ -363,7 +363,6 @@ async function loadExistingCollections() {
     saveOriginalState();
 
   } catch (error) {
-    console.error('Error loading collection data:', error);
     showErrorNotification('Failed to load collection data');
   }
 }
@@ -371,18 +370,6 @@ async function loadExistingCollections() {
 function saveOriginalState() {
   // Create a deep copy of the current collection sheet to track changes
   originalCollectionSheet.value = JSON.parse(JSON.stringify(collectionSheet.value));
-  console.log('💾 Original state saved:', {
-    rowCount: originalCollectionSheet.value.length,
-    membersWithData: originalCollectionSheet.value.filter(r => r.amount && r.amount.trim() !== '').length,
-    rows: originalCollectionSheet.value.map(r => ({
-      memberId: r.memberId,
-      memberName: r.memberName,
-      amount: r.amount,
-      installment: r.installment,
-      hasId: !!r.id,
-      id: r.id
-    }))
-  });
 }
 
 async function getPreviousCollections(memberId: number): Promise<ExistingCollection[]> {
@@ -513,7 +500,6 @@ async function clearCollectionData() {
     showSuccessNotification('Collection data cleared completely. You can now enter fresh data.');
     
   } catch (error: any) {
-    console.error('Error clearing collection data:', error);
     showErrorNotification(`Failed to clear collection data: ${error.message || 'Unknown error'}`);
   }
 }
@@ -744,19 +730,11 @@ function getChangedRows(): {
   return { toSave, toDelete, unchanged };
 }
 
-// Debug function to help test change tracking (can be removed later)
-function debugChanges() {
-  const { toSave, toDelete, unchanged } = getChangedRows();
- 
-  return { toSave, toDelete, unchanged };
-}
-
 async function deleteSpecificCollections(memberCollections: ExistingCollection[]) {
   for (const collection of memberCollections) {
     try {
       await collectionsStore.deleteCollection(collection.id, Number(collection.group_id));
     } catch (deleteError) {
-      console.warn('Failed to delete collection:', collection.id, deleteError);
       throw deleteError;
     }
   }
@@ -770,22 +748,6 @@ async function handleSubmit() {
   try {
     const { toSave, toDelete, unchanged } = getChangedRows();
     
-    console.log('🔄 Submit detected changes:', {
-      toSave: toSave.length,
-      toDelete: toDelete.length,
-      unchanged: unchanged.length,
-      isAfterSubmission: isAfterSubmission.value,
-      date: collection.value.date,
-      groupId: collection.value.group_id,
-      toSaveDetails: toSave.map(r => ({
-        memberId: r.memberId,
-        memberName: r.memberName,
-        amount: r.amount,
-        installment: r.installment,
-        hasId: !!r.id
-      }))
-    });
-
     if (toSave.length === 0 && toDelete.length === 0) {
       showErrorNotification('No changes detected. Please modify the collection data before saving.');
       return;
@@ -802,22 +764,17 @@ async function handleSubmit() {
     // Handle deletions first - only for members who had data but now don't
     for (const row of toDelete) {
       try {
-        console.log(`🗑️ Deleting data for member ${row.memberId} (${row.memberName})`);
-        
         // Only delete collections for this specific member on this specific date
         const memberOldCollections = existingCollections.filter((c: any) => c.member_id === row.memberId);
         
         if (memberOldCollections.length > 0) {
           // Delete each collection for this member individually
           for (const memberCollection of memberOldCollections) {
-            console.log(`🗑️ Deleting collection ID ${memberCollection.id} for member ${row.memberId}`);
             await collectionsStore.deleteCollection(memberCollection.id, Number(collection.value.group_id));
           }
-          console.log(`✅ Deleted ${memberOldCollections.length} collections for member ${row.memberId}`);
         }
       } catch (error: any) {
         hasError = true;
-        console.error(`❌ Delete failed for member ${row.memberId}:`, error);
         const errorDetails = error.response?.data?.details || error.response?.data?.message || error.message || 'Unknown error';
         showErrorNotification(`Failed to delete collection for member ${row.memberName}: ${errorDetails}`);
       }
@@ -831,32 +788,20 @@ async function handleSubmit() {
     // Handle saves/updates - only for members whose data actually changed
     for (const row of toSave) {
       try {
-        console.log(`💾 Processing changes for member ${row.memberId} (${row.memberName}):`, {
-          amount: row.amount,
-          installment: row.installment,
-          hasSpecificAmounts: Object.keys(row.installmentAmounts || {}).length > 0,
-          hasExistingId: !!row.id,
-          existingId: row.id
-        });
-        
         // Step 1: Delete existing collections for this member on this date (clean slate approach)
         const memberOldCollections = existingCollections.filter((c: any) => c.member_id === row.memberId);
         
         if (memberOldCollections.length > 0) {
-          console.log(`🔄 Deleting ${memberOldCollections.length} existing collections for member ${row.memberId} before update`);
           for (const memberCollection of memberOldCollections) {
-            console.log(`🗑️ Deleting existing collection ID ${memberCollection.id} for member ${row.memberId}`);
             await collectionsStore.deleteCollection(memberCollection.id, Number(collection.value.group_id));
           }
           // Small delay to ensure deletions complete
           await new Promise(resolve => setTimeout(resolve, 400));
-          console.log(`✅ Cleaned existing data for member ${row.memberId}`);
         }
         
         // Step 2: Create new collection(s) with updated data
         if (row.installmentAmounts && Object.keys(row.installmentAmounts).length > 0) {
           // Handle specific installment amounts (e.g., 3:3400,4:5500)
-          console.log(`📋 Creating specific installment collections for member ${row.memberId}`);
           
           for (const [installmentStr, amount] of Object.entries(row.installmentAmounts)) {
             const installmentNumber = parseInt(installmentStr);
@@ -870,16 +815,13 @@ async function handleSubmit() {
               allow_excess: true
             };
             
-            console.log(`💾 Creating collection for member ${row.memberId}, installment ${installmentNumber}, amount ₹${amount}`);
             await collectionsStore.createCollection(payload);
-            console.log(`✅ Created collection for member ${row.memberId}, installment ${installmentNumber}, amount ₹${amount}`);
             
             // Small delay between creations
             await new Promise(resolve => setTimeout(resolve, 100));
           }
         } else {
           // Handle auto-distribution
-          console.log(`🔄 Creating auto-distribution collection for member ${row.memberId}`);
           
           const installmentNumbers = row.installment.split(',').map(inst => {
             const cleanInst = inst.replace('c', '');
@@ -898,16 +840,11 @@ async function handleSubmit() {
             allow_excess: isSingleInstallment
           };
           
-          console.log(`💾 Creating auto-distribution collection for member ${row.memberId}, amount ₹${row.amount}, starting installment ${startingInstallmentNumber}`);
           await collectionsStore.createCollection(payload);
-          console.log(`✅ Created auto-distribution collection for member ${row.memberId}, amount ₹${row.amount}`);
         }
-        
-        console.log(`✅ Successfully processed member ${row.memberId} (${row.memberName})`);
         
       } catch (error: any) {
         hasError = true;
-        console.error(`❌ Save failed for member ${row.memberId}:`, error);
         const errorDetails = error.response?.data?.details || error.response?.data?.message || error.message || 'Unknown error';
         showErrorNotification(`Failed to save collection for ${row.memberName}: ${errorDetails}`);
       }
@@ -921,43 +858,34 @@ async function handleSubmit() {
       ]);
       
       if (toSave.length > 0 && toDelete.length > 0) {
-        message = `Collections updated successfully! ${changedMembers.size} member(s) modified: ${Array.from(changedMembers).join(', ')}`;
+        // message = `Collections updated successfully! ${changedMembers.size} member(s) modified: ${Array.from(changedMembers).join(', ')}`;
+        message = `Collections updated successfully!`;
       } else if (toSave.length > 0) {
-        message = `Collections saved successfully! ${changedMembers.size} member(s) updated: ${Array.from(changedMembers).join(', ')}`;
+        // message = `Collections saved successfully! ${changedMembers.size} member(s) updated: ${Array.from(changedMembers).join(', ')}`;
+        message = `Collections saved successfully!`;
       } else if (toDelete.length > 0) {
-        message = `Collections deleted successfully! ${changedMembers.size} member(s) cleared: ${Array.from(changedMembers).join(', ')}`;
+        // message = `Collections deleted successfully! ${changedMembers.size} member(s) cleared: ${Array.from(changedMembers).join(', ')}`;
+        message = `Collections deleted successfully!`;
       } else {
         message = 'Collections updated successfully!';
       }
       showSuccessNotification(message);
       
-      console.log(`🎉 Update completed successfully! Changed members:`, Array.from(changedMembers));
-      
       // Wait a bit before refreshing to ensure backend operations complete
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // After successful submission, reload the data to show the updated state
-      if (collection.value.date && collection.value.group_id) {
-        try {
-          await loadExistingCollections();
-          console.log(`🔄 Data refreshed successfully`);
-        } catch (refreshError) {
-          console.error('Error refreshing data:', refreshError);
-          showErrorNotification('Data saved but failed to refresh. Please reload the page to see changes.');
-        }
-      } else {
-        // If no date/group, clear everything
-        collectionSheet.value = [];
-        originalCollectionSheet.value = [];
-        collectionBalances.value = [];
-        isAfterSubmission.value = false;
-        submittedCollections.value = [];
-      }
+      // After successful submission, clear the collection sheet but keep date and group selected
+      // This allows user to add more collections for the same date/group
+      collectionSheet.value = [];
+      originalCollectionSheet.value = [];
+      collectionBalances.value = [];
+      isAfterSubmission.value = false;
+      submittedCollections.value = [];
       
       // Keep the group selected but clear any error messages
       errorMessage.value = '';
     } else {
-      showErrorNotification('Some collections failed to save. Please check the console and notifications for details.');
+      showErrorNotification('Some collections failed to save. Please check the notifications for details.');
     }
 
   } catch (error: any) {

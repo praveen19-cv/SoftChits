@@ -126,7 +126,7 @@ export class DailyCollectionSummaryService {
               WHERE id = ?
             `).run(existingSummary.id);
           });
-          console.log(`Deleted daily collection summary for date ${collectionDate} (no collections remaining)`);
+         
         } else {
           // Update existing summary
           await withRetry(() => {

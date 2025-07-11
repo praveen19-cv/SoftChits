@@ -802,6 +802,8 @@ async function handleSubmit() {
         // Step 2: Create new collection(s) with updated data
         if (row.installmentAmounts && Object.keys(row.installmentAmounts).length > 0) {
           // Handle specific installment amounts (e.g., 3:3400,4:5500)
+          // When user manually specifies amounts, allow excess for ALL installments
+          // since user might not enter them in chronological order
           
           for (const [installmentStr, amount] of Object.entries(row.installmentAmounts)) {
             const installmentNumber = parseInt(installmentStr);
@@ -812,7 +814,7 @@ async function handleSubmit() {
               installment_number: installmentNumber,
               collection_amount: amount,
               date: collection.value.date,
-              allow_excess: true
+              allow_excess: true // Allow excess for manually specified installments
             };
             
             await collectionsStore.createCollection(payload);
@@ -821,26 +823,237 @@ async function handleSubmit() {
             await new Promise(resolve => setTimeout(resolve, 100));
           }
         } else {
-          // Handle auto-distribution
+          // Handle auto-distribution with frontend calculation
           
           const installmentNumbers = row.installment.split(',').map(inst => {
             const cleanInst = inst.replace('c', '');
             return parseInt(cleanInst);
           }).filter(num => !isNaN(num));
 
-          const isSingleInstallment = installmentNumbers.length === 1;
-          const startingInstallmentNumber = isSingleInstallment ? installmentNumbers[0] : (Math.min(...installmentNumbers) || 1);
-
-          const payload = {
-            group_id: Number(collection.value.group_id),
-            member_id: row.memberId,
-            installment_number: startingInstallmentNumber,
-            collection_amount: parseFloat(row.amount),
-            date: collection.value.date,
-            allow_excess: isSingleInstallment
-          };
-          
-          await collectionsStore.createCollection(payload);
+          if (installmentNumbers.length === 1) {
+            // Single specific installment
+            const payload = {
+              group_id: Number(collection.value.group_id),
+              member_id: row.memberId,
+              installment_number: installmentNumbers[0],
+              collection_amount: parseFloat(row.amount),
+              date: collection.value.date,
+              allow_excess: true
+            };
+            
+            await collectionsStore.createCollection(payload);
+          } else if (installmentNumbers.length > 1) {
+            // Multiple installments specified - need to determine if this is manual or auto-distribution
+            // Check if these installments follow the natural pending sequence (auto-distribution)
+            // or if they are manually specified (manual entry)
+            const memberBalances = collectionBalances.value.filter(b => b.member_id === row.memberId);
+            const pendingInstallments = memberBalances
+              .sort((a, b) => a.installment_number - b.installment_number)
+              .map(b => b.installment_number);
+            
+            const sortedInstallmentNumbers = [...installmentNumbers].sort((a, b) => a - b);
+            const isSequentialFromPending = JSON.stringify(sortedInstallmentNumbers) === JSON.stringify(pendingInstallments.slice(0, installmentNumbers.length));
+            
+            if (isSequentialFromPending) {
+              // This looks like auto-distribution - treat it as such
+              // Calculate distributions for the specified installments
+              let remainingAmount = parseFloat(row.amount);
+              const distributions: { installment: number, amount: number }[] = [];
+              
+              // Distribute to specified installments sequentially
+              for (const installmentNumber of sortedInstallmentNumbers) {
+                if (remainingAmount <= 0) break;
+                
+                const balance = memberBalances.find(b => b.installment_number === installmentNumber);
+                if (balance) {
+                  const neededAmount = balance.remaining_balance;
+                  const distributedAmount = Math.min(remainingAmount, neededAmount);
+                  
+                  if (distributedAmount > 0) {
+                    distributions.push({
+                      installment: installmentNumber,
+                      amount: distributedAmount
+                    });
+                    remainingAmount -= distributedAmount;
+                  }
+                }
+              }
+              
+              // If there's excess remaining, add it to the last installment
+              if (remainingAmount > 0 && distributions.length > 0) {
+                const lastDistribution = distributions[distributions.length - 1];
+                lastDistribution.amount += remainingAmount;
+              }
+              
+              // Create collection records - only last installment allows excess
+              const lastInstallmentInDistribution = Math.max(...distributions.map(d => d.installment));
+              
+              for (const dist of distributions) {
+                const isLastInstallment = dist.installment === lastInstallmentInDistribution;
+                const payload = {
+                  group_id: Number(collection.value.group_id),
+                  member_id: row.memberId,
+                  installment_number: dist.installment,
+                  collection_amount: dist.amount,
+                  date: collection.value.date,
+                  allow_excess: isLastInstallment // Only allow excess in the last installment
+                };
+                
+                await collectionsStore.createCollection(payload);
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+            } else {
+              // This is manual specification - allow excess for ALL installments
+              const totalAmount = parseFloat(row.amount);
+              const amountPerInstallment = totalAmount / installmentNumbers.length;
+              
+              for (const installmentNumber of installmentNumbers) {
+                const payload = {
+                  group_id: Number(collection.value.group_id),
+                  member_id: row.memberId,
+                  installment_number: installmentNumber,
+                  collection_amount: amountPerInstallment,
+                  date: collection.value.date,
+                  allow_excess: true // Allow excess for manually specified installments
+                };
+                
+                await collectionsStore.createCollection(payload);
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+            }
+          } else {
+            // No installments specified - auto-distribution with frontend excess handling
+            const totalAmount = parseFloat(row.amount);
+            const memberBalances = collectionBalances.value.filter(b => b.member_id === row.memberId);
+            
+            if (memberBalances.length > 0) {
+              // Calculate distributions for incomplete installments
+              let remainingAmount = totalAmount;
+              const distributions: { installment: number, amount: number }[] = [];
+              
+              // Sort incomplete installments by installment number
+              const sortedBalances = memberBalances.sort((a, b) => a.installment_number - b.installment_number);
+              
+              // Distribute to incomplete installments first
+              for (const balance of sortedBalances) {
+                if (remainingAmount <= 0) break;
+                
+                const neededAmount = balance.remaining_balance;
+                const distributedAmount = Math.min(remainingAmount, neededAmount);
+                
+                if (distributedAmount > 0) {
+                  distributions.push({
+                    installment: balance.installment_number,
+                    amount: distributedAmount
+                  });
+                  remainingAmount -= distributedAmount;
+                }
+              }
+              
+              // If there's still excess, add it to the last installment for this member
+              if (remainingAmount > 0) {
+                try {
+                  const allMemberBalances = await collectionsStore.fetchCollectionBalances(Number(collection.value.group_id));
+                  const memberAllBalances = allMemberBalances.filter((b: any) => b.member_id === row.memberId);
+                  
+                  let lastInstallment: number;
+                  if (memberAllBalances.length > 0) {
+                    lastInstallment = Math.max(...memberAllBalances.map((b: any) => b.installment_number));
+                  } else if (selectedGroup.value && selectedGroup.value.number_of_months) {
+                    lastInstallment = selectedGroup.value.number_of_months;
+                  } else {
+                    lastInstallment = 1;
+                  }
+                  
+                  // Check if the last installment is already in distributions
+                  const existingDistribution = distributions.find(d => d.installment === lastInstallment);
+                  if (existingDistribution) {
+                    // Add excess to existing distribution
+                    existingDistribution.amount += remainingAmount;
+                  } else {
+                    // Create new distribution for the last installment with excess
+                    distributions.push({
+                      installment: lastInstallment,
+                      amount: remainingAmount
+                    });
+                  }
+                } catch (fetchError) {
+                  // Fallback to group's last installment
+                  const lastInstallment = selectedGroup.value?.number_of_months || 1;
+                  const existingDistribution = distributions.find(d => d.installment === lastInstallment);
+                  if (existingDistribution) {
+                    existingDistribution.amount += remainingAmount;
+                  } else {
+                    distributions.push({
+                      installment: lastInstallment,
+                      amount: remainingAmount
+                    });
+                  }
+                }
+              }
+              
+              // Create collection records for all distributions
+              // Find the last installment number to determine which one should allow excess
+              let lastInstallmentInDistribution = 0;
+              if (distributions.length > 0) {
+                lastInstallmentInDistribution = Math.max(...distributions.map(d => d.installment));
+              }
+              
+              for (const dist of distributions) {
+                const isLastInstallment = dist.installment === lastInstallmentInDistribution;
+                const payload = {
+                  group_id: Number(collection.value.group_id),
+                  member_id: row.memberId,
+                  installment_number: dist.installment,
+                  collection_amount: dist.amount,
+                  date: collection.value.date,
+                  allow_excess: isLastInstallment // Only allow excess in the last installment
+                };
+                
+                await collectionsStore.createCollection(payload);
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+            } else {
+              // No incomplete balances - store everything in last installment
+              try {
+                const allMemberBalances = await collectionsStore.fetchCollectionBalances(Number(collection.value.group_id));
+                const memberAllBalances = allMemberBalances.filter((b: any) => b.member_id === row.memberId);
+                
+                let targetInstallment: number;
+                if (memberAllBalances.length > 0) {
+                  targetInstallment = Math.max(...memberAllBalances.map((b: any) => b.installment_number));
+                } else if (selectedGroup.value && selectedGroup.value.number_of_months) {
+                  targetInstallment = selectedGroup.value.number_of_months;
+                } else {
+                  targetInstallment = 1;
+                }
+                
+                const payload = {
+                  group_id: Number(collection.value.group_id),
+                  member_id: row.memberId,
+                  installment_number: targetInstallment,
+                  collection_amount: totalAmount,
+                  date: collection.value.date,
+                  allow_excess: true
+                };
+                
+                await collectionsStore.createCollection(payload);
+              } catch (fetchError) {
+                // Final fallback
+                const targetInstallment = selectedGroup.value?.number_of_months || 1;
+                const payload = {
+                  group_id: Number(collection.value.group_id),
+                  member_id: row.memberId,
+                  installment_number: targetInstallment,
+                  collection_amount: totalAmount,
+                  date: collection.value.date,
+                  allow_excess: true
+                };
+                
+                await collectionsStore.createCollection(payload);
+              }
+            }
+          }
         }
         
       } catch (error: any) {

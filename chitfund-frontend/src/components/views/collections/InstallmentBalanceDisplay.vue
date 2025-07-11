@@ -198,7 +198,7 @@ function getBalancesFromBalanceData(parseResult: {
           // Multiple manual installments - distribute proportionally based on their remaining balances
           const totalOriginalBalance = parseResult.installments.reduce((sum, instNum) => {
             const bal = memberBalances.find(b => b.installment_number === instNum)
-            return sum + (bal ? Math.max(bal.remaining_balance, 0) : props.monthlySubscription)
+            return sum + (bal ? Math.max(bal.remaining_balance, 0) : 0) // Changed from props.monthlySubscription to 0
           }, 0)
           
           if (totalOriginalBalance > 0) {
@@ -210,10 +210,21 @@ function getBalancesFromBalanceData(parseResult: {
         }
       } else if (remainingAmount > 0) {
         // Auto-distribute amount (sequential distribution)
+        // For auto-distribution, follow backend logic: fill each installment exactly, put excess only in last
         if (originalBalance > 0) {
-          collectionAmount = Math.min(remainingAmount, originalBalance)
-          updatedBalance = originalBalance - collectionAmount
-          remainingAmount -= collectionAmount
+          const isLastInstallment = instNum === parseResult.installments[parseResult.installments.length - 1]
+          
+          if (isLastInstallment) {
+            // Last installment gets all remaining amount (including excess)
+            collectionAmount = remainingAmount
+            updatedBalance = originalBalance - collectionAmount
+            remainingAmount = 0
+          } else {
+            // Other installments get only what they need (no excess)
+            collectionAmount = Math.min(remainingAmount, originalBalance)
+            updatedBalance = originalBalance - collectionAmount
+            remainingAmount -= collectionAmount
+          }
         }
       }
 
@@ -230,8 +241,9 @@ function getBalancesFromBalanceData(parseResult: {
     } else if (!allBalance) {
       // Only show if no balance record exists at all (new installment)
       // If balance exists and is completed, we already handled it above
+      // For manually entered installments without balance records, use 0 as default instead of monthly subscription
       
-      const originalBalance = props.monthlySubscription
+      const originalBalance = 0 // Changed from props.monthlySubscription to 0
       let updatedBalance = originalBalance
       let collectionAmount = 0
 
@@ -246,9 +258,21 @@ function getBalancesFromBalanceData(parseResult: {
         }
         updatedBalance = originalBalance - collectionAmount
       } else if (remainingAmount > 0) {
-        collectionAmount = Math.min(remainingAmount, originalBalance)
-        updatedBalance = originalBalance - collectionAmount
-        remainingAmount -= collectionAmount
+        // Auto-distribute amount (sequential distribution)
+        // For auto-distribution, follow backend logic: fill each installment exactly, put excess only in last
+        const isLastInstallment = instNum === parseResult.installments[parseResult.installments.length - 1]
+        
+        if (isLastInstallment) {
+          // Last installment gets all remaining amount (including excess)
+          collectionAmount = remainingAmount
+          updatedBalance = originalBalance - collectionAmount
+          remainingAmount = 0
+        } else {
+          // Other installments get only what they need (no excess)
+          collectionAmount = Math.min(remainingAmount, originalBalance || props.collectionAmount)
+          updatedBalance = originalBalance - collectionAmount
+          remainingAmount -= collectionAmount
+        }
       }
 
       const status = getStatus(originalBalance, updatedBalance, collectionAmount)
@@ -297,7 +321,7 @@ function getBalancesFromCollectionData(parseResult: {
       })
     } else {
       // No collection record for this installment
-      const originalBalance = props.monthlySubscription
+      const originalBalance = 0 // Changed from props.monthlySubscription to 0
       const status = 'pending'
 
       results.push({

@@ -37,58 +37,13 @@
           </div>
         </div>
 
-        <div class="form-group">
-          <label for="group-search">Groups (Multi-select)</label>
-          <div class="cs-dropdown">
-            <div class="cs-dropdown-selected" @click="groupDropdownOpen = !groupDropdownOpen">
-              {{ selectedGroupsText || 'Select Groups' }}
-              <span class="cs-dropdown-arrow">▼</span>
-            </div>
-            <div v-if="groupDropdownOpen" class="cs-dropdown-list multi-select" @click.stop>
-              <input
-                id="group-search"
-                name="group-search"
-                v-model="groupSearch"
-                class="cs-dropdown-search"
-                placeholder="Search groups..."
-                @click.stop
-              />
-              <div class="dropdown-actions">
-                <button 
-                  type="button" 
-                  class="action-btn select-all-btn" 
-                  @click="selectAllGroups"
-                  :disabled="selectedGroupIds.length === filteredGroups.length"
-                >
-                  Select All
-                </button>
-                <button 
-                  type="button" 
-                  class="action-btn clear-all-btn" 
-                  @click="clearAllGroups"
-                  :disabled="selectedGroupIds.length === 0"
-                >
-                  Clear All
-                </button>
-              </div>
-              <div
-                v-for="group in filteredGroups"
-                :key="group.id"
-                class="cs-dropdown-item checkbox-item"
-                :class="{ selected: selectedGroupIds.includes(group.id) }"
-                @click="toggleGroup(group)"
-              >
-                <input 
-                  type="checkbox" 
-                  :checked="selectedGroupIds.includes(group.id)"
-                  @change="toggleGroup(group)"
-                />
-                <span>{{ group.name }}</span>
-              </div>
-              <div v-if="!filteredGroups.length" class="cs-dropdown-noresult">No groups found</div>
-            </div>
-          </div>
-        </div>
+        <GroupSelection
+          :groups="groups"
+          v-model="selectedGroupIds"
+          v-model:statusModelValue="selectedStatusIds"
+          @change="handleGroupSelectionChange"
+          @statusChange="handleStatusSelectionChange"
+        />
 
         <button 
           class="submit-btn" 
@@ -265,11 +220,12 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useMembersStore } from '@/stores/MembersStore'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
+import GroupSelection from '@/components/standards/GroupSelection.vue'
 import CustomerLedger from './ViewCollections/CustomerLedger.vue'
 
 const groupsStore = useGroupsStore()
@@ -278,11 +234,10 @@ const membersStore = useMembersStore()
 
 // Selection state
 const customerSearch = ref('')
-const groupSearch = ref('')
 const selectedCustomerId = ref<number | null>(null)
 const selectedGroupIds = ref<number[]>([])
+const selectedStatusIds = ref<string[]>(['active']) // Default to active status
 const customerDropdownOpen = ref(false)
-const groupDropdownOpen = ref(false)
 
 // Data
 const customers = ref<{ id: number; name: string }[]>([])
@@ -329,23 +284,9 @@ const filteredCustomers = computed(() => {
   return customers.value.filter(c => c.name.toLowerCase().includes(search))
 })
 
-const filteredGroups = computed(() => {
-  const search = groupSearch.value.toLowerCase()
-  return groups.value.filter(g => g.name.toLowerCase().includes(search))
-})
-
 const selectedCustomerName = computed(() => {
   const customer = customers.value.find(c => c.id === selectedCustomerId.value)
   return customer ? customer.name : ''
-})
-
-const selectedGroupsText = computed(() => {
-  if (selectedGroupIds.value.length === 0) return ''
-  if (selectedGroupIds.value.length === 1) {
-    const group = groups.value.find(g => g.id === selectedGroupIds.value[0])
-    return group ? group.name : ''
-  }
-  return `${selectedGroupIds.value.length} groups selected`
 })
 
 const availableFromGroups = computed(() => {
@@ -434,34 +375,15 @@ function selectCustomer(customer: { id: number; name: string }) {
   resetAdjustmentForm()
 }
 
-function toggleGroup(group: { id: number; name: string }) {
-  const index = selectedGroupIds.value.indexOf(group.id)
-  if (index > -1) {
-    selectedGroupIds.value.splice(index, 1)
-  } else {
-    selectedGroupIds.value.push(group.id)
-  }
-  
+function handleGroupSelectionChange(selectedGroups: { id: number; name: string }[]) {
   // Reset data when groups change
   customerInstallmentData.value = []
   collectionsData.value = []
   resetAdjustmentForm()
 }
 
-function selectAllGroups() {
-  const allFilteredIds = filteredGroups.value.map(g => g.id)
-  selectedGroupIds.value = [...new Set([...selectedGroupIds.value, ...allFilteredIds])]
-  
-  // Reset data when groups change
-  customerInstallmentData.value = []
-  collectionsData.value = []
-  resetAdjustmentForm()
-}
-
-function clearAllGroups() {
-  selectedGroupIds.value = []
-  
-  // Reset data when groups change
+function handleStatusSelectionChange(selectedStatuses: { id: string; name: string }[]) {
+  // Reset data when status changes
   customerInstallmentData.value = []
   collectionsData.value = []
   resetAdjustmentForm()
@@ -741,7 +663,13 @@ async function loadInitialData() {
       membersStore.fetchMembers()
     ])
     
-    groups.value = groupsStore.groups.map(g => ({ id: g.id, name: g.name }))
+    // Filter groups by selected status
+    const allGroups = groupsStore.groups
+    const filteredGroups = allGroups.filter(g => 
+      selectedStatusIds.value.length === 0 || selectedStatusIds.value.includes(g.status)
+    )
+    
+    groups.value = filteredGroups.map(g => ({ id: g.id, name: g.name }))
     customers.value = membersStore.members.map(m => ({ id: m.id, name: m.name }))
   } catch (error) {
     console.error('Error loading initial data:', error)
@@ -753,7 +681,6 @@ function handleClickOutside(event: Event) {
   const target = event.target as HTMLElement
   if (!target.closest('.cs-dropdown')) {
     customerDropdownOpen.value = false
-    groupDropdownOpen.value = false
     fromInstallmentDropdownOpen.value = false
     toInstallmentDropdownOpen.value = false
   }
@@ -767,6 +694,11 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
 })
+
+// Watch for status changes to reload groups
+watch(selectedStatusIds, () => {
+  loadInitialData()
+}, { deep: true })
 </script>
 
 <style scoped>
@@ -917,48 +849,6 @@ input[type="number"]:focus, input[type="date"]:focus, select:focus {
   outline: none;
 }
 
-.dropdown-actions {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid #e9ecef;
-  background: #f8f9fa;
-}
-
-.action-btn {
-  flex: 1;
-  padding: 0.4rem 0.8rem;
-  border: none;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.select-all-btn {
-  background: #e3f2fd;
-  color: #1976d2;
-}
-
-.select-all-btn:hover:not(:disabled) {
-  background: #bbdefb;
-}
-
-.clear-all-btn {
-  background: #fce4ec;
-  color: #c2185b;
-}
-
-.clear-all-btn:hover:not(:disabled) {
-  background: #f8bbd9;
-}
-
-.action-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .cs-dropdown-item {
   padding: 0.7rem 1rem;
   cursor: pointer;
@@ -967,32 +857,6 @@ input[type="number"]:focus, input[type="date"]:focus, select:focus {
 
 .cs-dropdown-item:hover {
   background: #e3f2fd;
-}
-
-.checkbox-item {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.checkbox-item input[type="checkbox"] {
-  width: auto;
-  margin: 0;
-  cursor: pointer;
-  transform: scale(1.1);
-}
-
-.checkbox-item.selected {
-  background: #e8f5e8;
-  font-weight: 600;
-}
-
-.checkbox-item:hover {
-  background: #e3f2fd;
-}
-
-.checkbox-item.selected:hover {
-  background: #d4edda;
 }
 
 .cs-dropdown-noresult {

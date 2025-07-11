@@ -1,5 +1,6 @@
 import { dbPool } from './connection';
 import Database from 'better-sqlite3';
+import { ConsolidatedDailySummaryService } from './consolidatedDailySummary';
 
 // Transaction queue to handle concurrent access
 let transactionQueue: Promise<any> = Promise.resolve();
@@ -122,6 +123,9 @@ export async function initializeDatabase() {
     migrateAddTenDatesChitColumn(db);
     migrateAddStatusColumn(db);
     
+    // Initialize consolidated daily summary table
+    await initializeConsolidatedDailySummary();
+    
   } catch (error) {
     console.error('Error initializing database:', error);
     throw error;
@@ -159,6 +163,18 @@ function migrateAddStatusColumn(db: Database.Database) {
     }
   } catch (error) {
     console.error('Error adding status column:', error);
+  }
+}
+
+// Initialize consolidated daily summary
+async function initializeConsolidatedDailySummary() {
+  try {
+    console.log('Initializing consolidated daily summary table...');
+    await ConsolidatedDailySummaryService.createTable();
+    console.log('Consolidated daily summary table created successfully.');
+  } catch (error) {
+    console.error('Error initializing consolidated daily summary:', error);
+    // Don't throw error here to avoid breaking the main initialization
   }
 }
 

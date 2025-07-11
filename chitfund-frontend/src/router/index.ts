@@ -50,6 +50,10 @@ const routes: Array<RouteRecordRaw> = [
     component: () => import('../components/views/groups/MoreGroupDetails/MoreGroupDetails.vue')
   },
   {
+    path: '/collections',
+    redirect: '/collections/view'
+  },
+  {
     path: '/collections/view',
     name: 'view-collections',
     component: () => import('../components/views/collections/ViewCollection.vue')

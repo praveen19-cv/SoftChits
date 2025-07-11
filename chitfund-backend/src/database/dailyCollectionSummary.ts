@@ -1,5 +1,6 @@
 import { getWriteDb, getReadDb } from './setup';
 import { withRetry } from '../utils/dbUtils';
+import { ConsolidatedDailySummaryService } from './consolidatedDailySummary';
 
 export interface DailyCollectionSummary {
   id: number;
@@ -153,7 +154,15 @@ export class DailyCollectionSummaryService {
         }
       }
 
-      
+      // Update consolidated daily summary after updating group summary
+      try {
+        await ConsolidatedDailySummaryService.updateConsolidatedSummary(collectionDate);
+      } catch (consolidatedError) {
+        console.error('Error updating consolidated summary:', consolidatedError);
+        // Don't throw error here to avoid breaking the main operation
+      }
+
+      console.log(`Updated daily summary for group ${groupId} on ${collectionDate}: ₹${dailyStats.total_amount}, ${dailyStats.total_members_paid} members`);
     } catch (error) {
       console.error('Error updating daily collection summary:', error);
       throw error;

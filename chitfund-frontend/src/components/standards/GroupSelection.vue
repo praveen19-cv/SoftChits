@@ -1,20 +1,20 @@
 <template>
   <div class="selection-container">
-    <div class="form-group">
+    <div v-if="shouldShowStatusFilter" class="form-group">
       <label for="status-search">Group Status</label>
       <div class="cs-dropdown">
         <div class="cs-dropdown-selected" @click="statusDropdownOpen = !statusDropdownOpen">
           {{ selectedStatusText || statusPlaceholder }}
           <span class="cs-dropdown-arrow">▼</span>
         </div>
-        <div v-if="statusDropdownOpen" class="cs-dropdown-list multi-select" @click.stop>
+        <div v-if="statusDropdownOpen" class="cs-dropdown-list multi-select" @mousedown.prevent>
           <input
             id="status-search"
             name="status-search"
             v-model="statusSearch"
             class="cs-dropdown-search"
             placeholder="Search status..."
-            @click.stop
+            @mousedown.stop
           />
           <div class="dropdown-actions">
             <button 
@@ -39,12 +39,15 @@
             :key="status.id"
             class="cs-dropdown-item checkbox-item"
             :class="{ selected: selectedStatusIds.includes(status.id) }"
-            @click="toggleStatus(status)"
+            @click="handleStatusClick(status)"
+            style="cursor:pointer;"
           >
             <input 
               type="checkbox" 
               :checked="selectedStatusIds.includes(status.id)"
-              @change="toggleStatus(status)"
+              readonly
+              tabindex="-1"
+              style="pointer-events:none;"
             />
             <span>{{ status.name }}</span>
           </div>
@@ -54,9 +57,21 @@
     </div>
 
     <div class="form-group">
-      <label for="group-search">Groups</label>
+      <label for="group-search">
+        Groups 
+        <span v-if="shouldShowStatusFilter && selectedStatusIds.length === 0" class="group-count-indicator warning">
+          (Select status first)
+        </span>
+        <span v-else-if="shouldShowStatusFilter && selectedStatusIds.length > 0" class="group-count-indicator">
+          ({{ filteredGroups.length }} available)
+        </span>
+      </label>
       <div class="cs-dropdown">
-        <div class="cs-dropdown-selected" @click="groupDropdownOpen = !groupDropdownOpen">
+        <div 
+          class="cs-dropdown-selected" 
+          :class="{ 'disabled': shouldShowStatusFilter && selectedStatusIds.length === 0 }"
+          @click="shouldShowStatusFilter && selectedStatusIds.length === 0 ? null : (groupDropdownOpen = !groupDropdownOpen)"
+        >
           {{ selectedGroupsText || placeholder }}
           <span class="cs-dropdown-arrow">▼</span>
         </div>
@@ -73,7 +88,7 @@
             <button 
               type="button" 
               class="action-btn select-all-btn" 
-              @click="selectAllGroups"
+              @click.stop="selectAllGroups"
               :disabled="selectedGroupIds.length === filteredGroups.length"
             >
               Select All
@@ -81,7 +96,7 @@
             <button 
               type="button" 
               class="action-btn clear-all-btn" 
-              @click="clearAllGroups"
+              @click.stop="clearAllGroups"
               :disabled="selectedGroupIds.length === 0"
             >
               Clear All
@@ -95,17 +110,17 @@
               'checkbox-item': props.multiSelectGroups,
               'selected': props.multiSelectGroups ? selectedGroupIds.includes(group.id) : selectedGroupIds[0] === group.id
             }"
-            @click="props.multiSelectGroups ? toggleGroup(group) : selectSingleGroup(group)"
+            @click="handleGroupClick(group)"
           >
             <input 
               v-if="props.multiSelectGroups"
               type="checkbox" 
               :checked="selectedGroupIds.includes(group.id)"
-              @change="toggleGroup(group)"
+              readonly
             />
             <span>{{ group.name }}</span>
           </div>
-          <div v-if="!filteredGroups.length" class="cs-dropdown-noresult">No groups found</div>
+          <div v-if="!filteredGroups.length" class="cs-dropdown-noresult">{{ noGroupsMessage }}</div>
         </div>
       </div>
     </div>
@@ -118,6 +133,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 interface Group {
   id: number
   name: string
+  status?: string
 }
 
 interface Status {
@@ -134,6 +150,7 @@ interface Props {
   statusPlaceholder?: string
   disabled?: boolean
   multiSelectGroups?: boolean
+  enableStatusFilter?: boolean
 }
 
 interface Emits {
@@ -151,9 +168,10 @@ const props = withDefaults(defineProps<Props>(), {
     { id: 'inactive', name: 'Inactive' },
     { id: 'completed', name: 'Completed' }
   ],
-  statusModelValue: () => [],
+  statusModelValue: () => ['active'], // Default to active status for backward compatibility
   disabled: false,
-  multiSelectGroups: true
+  multiSelectGroups: true,
+  enableStatusFilter: undefined // Auto-detect if not specified
 })
 
 const emit = defineEmits<Emits>()
@@ -185,12 +203,47 @@ const selectedStatusIds = computed({
 
 const filteredGroups = computed(() => {
   const search = groupSearch.value.toLowerCase()
-  return props.groups.filter(g => g.name.toLowerCase().includes(search))
+  
+  // If status filter is enabled but no status is selected, show no groups
+  if (shouldShowStatusFilter.value && selectedStatusIds.value.length === 0) {
+    return []
+  }
+  
+  // First filter by status - only apply status filtering if it's enabled and we have status selections
+  let groups = props.groups
+  if (shouldShowStatusFilter.value && selectedStatusIds.value.length > 0) {
+    groups = props.groups.filter(g => {
+      // If group doesn't have status property, assume it matches 'active' status for backward compatibility
+      if (!g.status) {
+        return selectedStatusIds.value.includes('active')
+      }
+      // Include group if its status is in the selected statuses
+      return selectedStatusIds.value.includes(g.status.toLowerCase())
+    })
+  }
+  
+  // Then filter by search text
+  return groups.filter(g => g.name.toLowerCase().includes(search))
 })
 
 const filteredStatuses = computed(() => {
   const search = statusSearch.value.toLowerCase()
   return props.statusOptions.filter(s => s.name.toLowerCase().includes(search))
+})
+
+const hasStatusProperty = computed(() => {
+  // Check if any group has a status property
+  return props.groups.some(g => g.status !== undefined)
+})
+
+const shouldShowStatusFilter = computed(() => {
+  // If enableStatusFilter is explicitly set, use that value
+  if (props.enableStatusFilter !== undefined) {
+    return props.enableStatusFilter
+  }
+  
+  // Auto-detect: Show status filter if groups have status property or if statusModelValue is provided
+  return hasStatusProperty.value || props.statusModelValue
 })
 
 const selectedGroupsText = computed(() => {
@@ -211,7 +264,47 @@ const selectedStatusText = computed(() => {
   return `${selectedStatusIds.value.length} statuses selected`
 })
 
+const noGroupsMessage = computed(() => {
+  // If status filter is shown but no status is selected
+  if (shouldShowStatusFilter.value && selectedStatusIds.value.length === 0) {
+    return 'Please select a status first to view groups'
+  }
+  
+  if (groupSearch.value && filteredGroups.value.length === 0) {
+    return 'No groups found matching search'
+  }
+  if (shouldShowStatusFilter.value && selectedStatusIds.value.length > 0 && filteredGroups.value.length === 0) {
+    return 'No groups available for selected status'
+  }
+  return 'No groups found'
+})
+
 // Methods
+function isStatusFilteringEffective(): boolean {
+  // Returns true if status filtering will actually filter groups
+  return shouldShowStatusFilter.value && hasStatusProperty.value && selectedStatusIds.value.length > 0
+}
+
+function clearStatusSelection() {
+  // Public method that can be called by parent components to clear status
+  selectedStatusIds.value = []
+}
+
+function handleGroupClick(group: Group) {
+  if (props.disabled) return
+  
+  if (props.multiSelectGroups) {
+    toggleGroup(group)
+  } else {
+    selectSingleGroup(group)
+  }
+}
+
+function handleStatusClick(status: Status) {
+  if (props.disabled) return
+  toggleStatus(status)
+}
+
 function toggleGroup(group: Group) {
   if (props.disabled) return
   
@@ -239,8 +332,7 @@ function selectAllGroups() {
   if (props.disabled) return
   
   const allFilteredIds = filteredGroups.value.map(g => g.id)
-  const newIds = [...new Set([...selectedGroupIds.value, ...allFilteredIds])]
-  selectedGroupIds.value = newIds
+  selectedGroupIds.value = allFilteredIds
 }
 
 function clearAllGroups() {
@@ -261,19 +353,41 @@ function toggleStatus(status: Status) {
   }
   
   selectedStatusIds.value = currentIds
+  
+  // Clear selected groups when status changes to avoid invalid selections
+  clearSelectedGroupsIfNotMatchingStatus()
 }
 
 function selectAllStatuses() {
   if (props.disabled) return
   
   const allFilteredIds = filteredStatuses.value.map(s => s.id)
-  const newIds = [...new Set([...selectedStatusIds.value, ...allFilteredIds])]
-  selectedStatusIds.value = newIds
+  selectedStatusIds.value = allFilteredIds
+  
+  // Clear selected groups when status changes
+  clearSelectedGroupsIfNotMatchingStatus()
 }
 
 function clearAllStatuses() {
   if (props.disabled) return
   selectedStatusIds.value = []
+  
+  // Clear selected groups when status is cleared
+  clearSelectedGroupsIfNotMatchingStatus()
+}
+
+function clearSelectedGroupsIfNotMatchingStatus() {
+  // Only clear groups if status filtering is enabled
+  if (!shouldShowStatusFilter.value) return
+  
+  // Check if any selected groups don't match the current status filter
+  const validGroupIds = filteredGroups.value.map(g => g.id)
+  const currentSelectedIds = selectedGroupIds.value.filter(id => validGroupIds.includes(id))
+  
+  // If some groups are no longer valid, update the selection
+  if (currentSelectedIds.length !== selectedGroupIds.value.length) {
+    selectedGroupIds.value = currentSelectedIds
+  }
 }
 
 function handleClickOutside(event: Event) {
@@ -290,6 +404,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
+})
+
+// Expose methods for parent components
+defineExpose({
+  clearStatusSelection,
+  isStatusFilteringEffective
 })
 </script>
 
@@ -313,6 +433,22 @@ label {
   font-weight: 600;
 }
 
+.group-count-indicator {
+  font-size: 0.85rem;
+  color: #2980b9;
+  font-weight: 500;
+  background: #e3f2fd;
+  padding: 0.2rem 0.5rem;
+  border-radius: 12px;
+  margin-left: 0.5rem;
+}
+
+.group-count-indicator.warning {
+  color: #d68910;
+  background: #fef9e7;
+  border: 1px solid #f39c12;
+}
+
 .cs-dropdown {
   position: relative;
 }
@@ -332,6 +468,17 @@ label {
 
 .cs-dropdown-selected:hover {
   border-color: #2980b9;
+}
+
+.cs-dropdown-selected.disabled {
+  background: #f5f6fa;
+  color: #a4a4a4;
+  cursor: not-allowed;
+  border-color: #ddd;
+}
+
+.cs-dropdown-selected.disabled:hover {
+  border-color: #ddd;
 }
 
 .cs-dropdown-arrow {

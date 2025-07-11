@@ -241,7 +241,7 @@ const customerDropdownOpen = ref(false)
 
 // Data
 const customers = ref<{ id: number; name: string }[]>([])
-const groups = ref<{ id: number; name: string }[]>([])
+const groups = ref<{ id: number; name: string; status: string }[]>([])
 const customerInstallmentData = ref<any[]>([])
 const collectionsData = ref<any[]>([])
 const errorMessage = ref('')
@@ -663,13 +663,9 @@ async function loadInitialData() {
       membersStore.fetchMembers()
     ])
     
-    // Filter groups by selected status
+    // Load all groups and let GroupSelection handle status filtering
     const allGroups = groupsStore.groups
-    const filteredGroups = allGroups.filter(g => 
-      selectedStatusIds.value.length === 0 || selectedStatusIds.value.includes(g.status)
-    )
-    
-    groups.value = filteredGroups.map(g => ({ id: g.id, name: g.name }))
+    groups.value = allGroups.map(g => ({ id: g.id, name: g.name, status: g.status }))
     customers.value = membersStore.members.map(m => ({ id: m.id, name: m.name }))
   } catch (error) {
     console.error('Error loading initial data:', error)

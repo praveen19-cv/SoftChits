@@ -5,9 +5,10 @@ import { useCollectionsStore } from '@/stores/CollectionsStore'
 import { useGroupsStore } from '@/stores/GroupsStore'
 import { useMembersStore } from '@/stores/MembersStore'
 import type { CollectionBalance } from '@/stores/CollectionsStore'
-import type { CollectionSheetRow } from './CollectionSheetRow.ts'
+import type { CollectionSheetRow } from './AddCollection/CollectionSheetRow.ts'
 import StandardNotification from '@/components/standards/StandardNotification.vue'
-import CollectionSheetTable from './CollectionSheetTable.vue'
+import CollectionSheetTable from './AddCollection/CollectionSheetTable.vue'
+import GroupSelection from '@/components/standards/GroupSelection.vue'
 
 interface Group {
   id: number
@@ -50,10 +51,13 @@ const membersStore = useMembersStore()
 const groups = ref<Group[]>([])
 const members = ref<Member[]>([])
 const groupMembers = ref<Member[]>([])
+const selectedGroupIds = ref<number[]>([])
+const selectedGroups = ref<Group[]>([])
+const selectedStatusIds = ref<string[]>(['active']) // Default to active status
 
 const collection = ref({
   date: '',
-  group_id: '',
+  group_id: '', // Keep this for backward compatibility
   status: 'pending'
 })
 
@@ -69,6 +73,42 @@ const selectedGroup = ref<Group | null>(null)
 const errorMessage = ref('')
 const showPrompt = ref(false)
 const promptMessage = ref('')
+
+// Group selection handlers
+function handleGroupSelectionChange(simpleGroups: { id: number; name: string }[]) {
+  // Convert back to full Group objects
+  const fullGroups = simpleGroups.map(sg => 
+    groups.value.find(g => g.id === sg.id)
+  ).filter(Boolean) as Group[]
+  
+  selectedGroups.value = fullGroups
+  
+  // For AddCollection, we work with one group at a time
+  if (fullGroups.length === 1) {
+    selectedGroup.value = fullGroups[0]
+    collection.value.group_id = fullGroups[0].id.toString()
+  } else if (fullGroups.length === 0) {
+    selectedGroup.value = null
+    collection.value.group_id = ''
+  } else {
+    // Multiple groups selected - use the first one and notify user
+    selectedGroup.value = fullGroups[0]
+    collection.value.group_id = fullGroups[0].id.toString()
+    showErrorNotification('Multiple groups selected. Using the first group: ' + fullGroups[0].name)
+  }
+  
+  // Clear collection data when groups change
+  collectionSheet.value = []
+  originalCollectionSheet.value = []
+  collectionBalances.value = []
+  isAfterSubmission.value = false
+  submittedCollections.value = []
+}
+
+function handleStatusSelectionChange(selectedStatuses: { id: string; name: string }[]) {
+  // Status change handling if needed
+  console.log('Status selection changed:', selectedStatuses)
+}
 
 // New state for managing data sources
 const isAfterSubmission = ref(false)
@@ -381,25 +421,6 @@ async function getPreviousCollections(memberId: number): Promise<ExistingCollect
     );
   } catch (error) {
     return [];
-  }
-}
-
-async function handleGroupChange() {
-  // Clear the collection sheet immediately when group changes
-  collectionSheet.value = [];
-  collectionBalances.value = [];
-  
-  // Reset submission state
-  isAfterSubmission.value = false;
-  submittedCollections.value = [];
-  
-  const group = groups.value.find(g => g.id === Number(collection.value.group_id))
-  if (group) {
-    selectedGroup.value = group
-    errorMessage.value = '';
-  } else {
-    selectedGroup.value = null
-    errorMessage.value = '';
   }
 }
 
@@ -1158,7 +1179,7 @@ watch([
     return;
   }
   
-  // When date changes and we have both group and date, clear the table instead of auto-loading
+  // When date changes, clear state but don't auto-load
   if (newDate !== oldDate) {
     errorMessage.value = '';
     isAfterSubmission.value = false;
@@ -1168,12 +1189,10 @@ watch([
     if (newDate) {
       dateInput.value = formatDateForDisplay(newDate);
       
-      // Clear the collection sheet when date changes - user must click "Load Members" to reload
-      if (collectionSheet.value.length > 0) {
-        collectionSheet.value = [];
-        originalCollectionSheet.value = [];
-        collectionBalances.value = [];
-      }
+      // Clear existing data when date changes - user needs to click "Load Members"
+      collectionSheet.value = [];
+      originalCollectionSheet.value = [];
+      collectionBalances.value = [];
     } else {
       dateInput.value = '';
       // If date is cleared, clear everything
@@ -1216,7 +1235,7 @@ onMounted(() => {
     </div>
     <form @submit.prevent="handleSubmit" class="collection-form">
       <div class="form-row">
-        <div class="form-group">
+        <div class="form-group date-group">
           <label for="date">Date</label>
           <div class="date-input-container">
             <button type="button" @click="navigateDate('prev')" class="date-nav-button" title="Previous day">
@@ -1292,17 +1311,23 @@ onMounted(() => {
             </div>
           </div>
         </div>
-        <div class="form-group">
-          <label for="group_id">Group</label>
-          <div class="group-selection-row">
-            <select id="group_id" v-model="collection.group_id" required @change="handleGroupChange" class="group-select">
-              <option value="">Select a group</option>
-              <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
-            </select>
+        <div class="form-group group-selection-container">
+          <div class="group-selection-wrapper">
+            <GroupSelection
+              :groups="groups.map(g => ({ id: g.id, name: g.name, status: g.status }))"
+              v-model="selectedGroupIds"
+              v-model:statusModelValue="selectedStatusIds"
+              :multiSelectGroups="false"
+              placeholder="Select a group"
+              @change="handleGroupSelectionChange"
+              @statusChange="handleStatusSelectionChange"
+            />
+          </div>
+          <div class="load-button-wrapper">
             <button 
               type="button" 
               @click="loadGroupMembers" 
-              :disabled="!collection.group_id"
+              :disabled="!collection.group_id || !collection.date"
               class="load-members-button"
             >
               Load Members
@@ -1352,7 +1377,7 @@ onMounted(() => {
       </div>
       <div class="form-actions">
         <button type="submit" class="submit-button">Save Collection</button>
-        <button type="button" class="cancel-button" @click="router.push('/collections')">Cancel</button>
+        <button type="button" class="cancel-button" @click="router.push('/collections/view')">Cancel</button>
       </div>
     </form>
     <div v-if="showPrompt" class="prompt-overlay">
@@ -1402,6 +1427,26 @@ h2 {
 
 .form-group {
   flex: 1;
+}
+
+.date-group {
+  flex: 0 0 300px; /* Fixed width for date group */
+  min-width: 300px;
+}
+
+.group-selection-container {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.group-selection-wrapper {
+  flex: 1;
+}
+
+.load-button-wrapper {
+  flex: 0 0 auto;
+  margin-bottom: 0.5rem; /* Align with form group margin */
 }
 
 .group-selection-row {
@@ -1887,6 +1932,21 @@ td input.completed {
   .form-row {
     flex-direction: column;
     gap: 1rem;
+  }
+  
+  .date-group {
+    flex: 1;
+    min-width: auto;
+  }
+  
+  .group-selection-container {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .load-button-wrapper {
+    margin-bottom: 0;
+    margin-top: 1rem;
   }
   
   .group-selection-row {

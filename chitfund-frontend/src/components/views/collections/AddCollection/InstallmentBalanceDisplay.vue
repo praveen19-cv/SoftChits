@@ -37,7 +37,7 @@
 
 <script lang="ts" setup>
 import { computed } from 'vue'
-import type { CollectionBalance } from '../../../stores/CollectionsStore'
+import type { CollectionBalance } from '@/stores/CollectionsStore'
 
 interface Props {
   memberId: number

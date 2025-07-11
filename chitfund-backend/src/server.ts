@@ -9,6 +9,7 @@ import authRoutes from './routes/auth';
 import collectionBalanceRoutes from './routes/collection_balance';
 import collectionDataRoutes from './routes/collectionData';
 import dailySummaryRoutes from './routes/dailySummary';
+import consolidatedSummaryRoutes from './routes/consolidatedSummary';
 
 dotenv.config();
 
@@ -33,6 +34,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/collection-balance', collectionBalanceRoutes);
 app.use('/api/collection-data', collectionDataRoutes);
 app.use('/api/daily-summary', dailySummaryRoutes);
+app.use('/api/consolidated-summary', consolidatedSummaryRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

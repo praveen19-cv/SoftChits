@@ -249,6 +249,11 @@ h2 {
   color: #166534;
 }
 
+.status.inactive {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
 .status.completed {
   background-color: #dbeafe;
   color: #1e40af;

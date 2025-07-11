@@ -186,13 +186,13 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const db = dbPool.getWriteConnection();
   try {
-    const { name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage, is_ten_dates_chit } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage, is_ten_dates_chit, status } = req.body;
     
     const result = await withRetry(() => 
       db.prepare(`
-        INSERT INTO groups (name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage, is_ten_dates_chit)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage || 0, is_ten_dates_chit ? 1 : 0)
+        INSERT INTO groups (name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage, is_ten_dates_chit, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(name, total_amount, member_count, start_date, end_date, number_of_months, commission_percentage || 0, is_ten_dates_chit ? 1 : 0, status || 'active')
     );
 
     const newGroup = await withRetry(() => 
@@ -222,14 +222,14 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   const db = dbPool.getWriteConnection();
   try {
-    const { name, total_amount, member_count, start_date, end_date, commission_percentage, is_ten_dates_chit } = req.body;
+    const { name, total_amount, member_count, start_date, end_date, commission_percentage, is_ten_dates_chit, status } = req.body;
     
     const result = await withRetry(() => 
       db.prepare(`
         UPDATE groups
-        SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, commission_percentage = ?, is_ten_dates_chit = ?
+        SET name = ?, total_amount = ?, member_count = ?, start_date = ?, end_date = ?, commission_percentage = ?, is_ten_dates_chit = ?, status = ?
         WHERE id = ?
-      `).run(name, total_amount, member_count, start_date, end_date, commission_percentage || 0, is_ten_dates_chit ? 1 : 0, req.params.id)
+      `).run(name, total_amount, member_count, start_date, end_date, commission_percentage || 0, is_ten_dates_chit ? 1 : 0, status || 'active', req.params.id)
     );
 
     if (result.changes === 0) {

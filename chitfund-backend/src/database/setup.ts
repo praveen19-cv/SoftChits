@@ -67,6 +67,7 @@ export async function initializeDatabase() {
         member_count INTEGER NOT NULL, -- Maximum allowed members (set during group creation)
         start_date TEXT NOT NULL,
         end_date TEXT NOT NULL,
+        status TEXT DEFAULT 'active', -- Added status column
         number_of_months INTEGER NOT NULL DEFAULT 0,
         commission_percentage REAL DEFAULT 0,
         is_ten_dates_chit INTEGER DEFAULT 0, -- 0 for false, 1 for true
@@ -119,6 +120,7 @@ export async function initializeDatabase() {
     
     // Run migrations
     migrateAddTenDatesChitColumn(db);
+    migrateAddStatusColumn(db);
     
   } catch (error) {
     console.error('Error initializing database:', error);
@@ -140,6 +142,23 @@ function migrateAddTenDatesChitColumn(db: Database.Database) {
     }
   } catch (error) {
     console.error('Error adding is_ten_dates_chit column:', error);
+  }
+}
+
+// Add migration for status column
+function migrateAddStatusColumn(db: Database.Database) {
+  try {
+    // Check if column exists
+    const tableInfo = db.prepare("PRAGMA table_info(groups)").all() as any[];
+    const hasColumn = tableInfo.some((col: any) => col.name === 'status');
+    
+    if (!hasColumn) {
+      console.log('Adding status column to groups table...');
+      db.prepare('ALTER TABLE groups ADD COLUMN status TEXT DEFAULT \'active\'').run();
+      console.log('Successfully added status column.');
+    }
+  } catch (error) {
+    console.error('Error adding status column:', error);
   }
 }
 

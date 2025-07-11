@@ -226,11 +226,10 @@ async function handleSubmit() {
 
       <div class="form-group">
         <label for="status">Status</label>
-        <select id="status" v-model="group.status" required>
+        <select id="status" v-model="group.status" required disabled class="readonly-input">
           <option value="active">Active</option>
-          <option value="completed">Completed</option>
-          <option value="cancelled">Cancelled</option>
         </select>
+        <small class="helper-text">New groups are created as Active by default</small>
       </div>
 
       <div class="form-actions">

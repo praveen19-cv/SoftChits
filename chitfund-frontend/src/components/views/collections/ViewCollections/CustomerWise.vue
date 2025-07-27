@@ -95,7 +95,7 @@
             <div class="section-content">
               <CustomerLedger 
                 :customer="selectedCustomer"
-                :group="groups.find(g => g.id === groupId)"
+                :group="groups.find(g => g.id === groupId) ?? null"
                 :collections="collections.filter(c => c.group_id === groupId)"
               />
             </div>
